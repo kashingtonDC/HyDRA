@@ -1,5 +1,7 @@
 # Hybrid Data Remote Sensing Assimilation (HyDRA) System 
 
+![](/images/cvws_et.gif)
+
 # Data Used: 
 
 ## Satellite Data
