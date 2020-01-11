@@ -37,17 +37,17 @@ def col_to_dt(df):
 	return t
 
 def dl_2_df(dict_list, dt_idx):
-    '''
+	'''
 	converts a list of dictionaries to a single dataframe
 	'''
-    alldat = [item for sublist in [x.values() for x in dict_list] for item in sublist]
-    # Make the df
-    alldata = pd.DataFrame(alldat).T
-    alldata.index = dt_idx
-    col_headers = [item for sublist in [x.keys() for x in dict_list] for item in sublist]
-    alldata.columns = col_headers
+	alldat = [item for sublist in [x.values() for x in dict_list] for item in sublist]
+	# Make the df
+	alldata = pd.DataFrame(alldat).T
+	alldata.index = dt_idx
+	col_headers = [item for sublist in [x.keys() for x in dict_list] for item in sublist]
+	alldata.columns = col_headers
 
-    return alldata
+	return alldata
 
 
 '''
@@ -125,9 +125,9 @@ def gen_polys(geometry, dx=0.5, dy=0.5):
 	
 	return ee.FeatureCollection(ee.List(polys))
 
+
 '''
 Functions to handle Remote Sensing data, mostly in earth engine 
-
 '''
 
 def get_data(dataset, year, month, area):
@@ -215,39 +215,87 @@ def calc_monthly_sum(dataset, years, months, area):
 
 	return sums
 
-def get_grace(dataset, year, month):
-
-	col = dataset[0]
+def calc_monthly_mean(dataset, startdate, enddate, area):
+	
+	'''
+	Calculates monthly mean for sub monthly data
+	'''
+	ImageCollection = dataset[0]
 	var = dataset[1]
 	scaling_factor = dataset[2]
-
-	t = col.filter(ee.Filter.calendarRange(year, year, 'year')).filter(ee.Filter.calendarRange(month, month, 'month')).select(var).filterBounds(area).sum()
-	t2 = t.multiply(ee.Image.pixelArea()).multiply(scaling_factor).multiply(1e-6) # Multiply by pixel area in km^2
+			
+	dt_idx = pd.date_range(startdate,enddate, freq='M')
 	
-	scale = t2.projection().nominalScale()
-	sumdict  = t2.reduceRegion(
-			reducer = ee.Reducer.sum(),
+	means = []
+	seq = ee.List.sequence(0, len(dt_idx))
+
+	# Progress bar 
+	num_steps = seq.getInfo()
+	print("processing:")
+	print("{}".format(ImageCollection))
+	print("progress:")
+
+	for i in num_steps:
+		if i % 5 == 0:
+			print(str((i / len(num_steps))*100)[:5] + " % ")
+	
+		start = ee.Date(startdate).advance(i, 'month')
+		end = start.advance(1, 'month');
+		im = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).mean().set('system:time_start', start.millis())
+		ic = im.multiply(1e-3).multiply(ee.Image.pixelArea()).multiply(1e-9)
+		scale = ic.projection().nominalScale()
+		
+		sumdict  = ic.reduceRegion(
+			reducer = ee.Reducer.mean(),
 			geometry = area,
-			scale = scale)
+			scale = scale,
+			bestEffort = True)
+
+		total = sumdict.getInfo()[var]
+		means.append(total)
+
+	return means
+
+def get_grace(dataset, startdate, enddate, area):
+
+	ImageCollection = dataset[0]
+	var = dataset[1]
+	scaling_factor = dataset[2]
 	
-	result = sumdict.getInfo()[var] * 1e-5 # cm to km
-
-	return result
-
-def grace_wrapper(dataset):
-	monthly = []
-
-	for year in years:
-		print(year)
-		for month in months:
-			try:
-				r = get_grace(dataset, year, month)
-				monthly.append(r)
-			except:
-				monthly.append(np.nan)
+	dt_idx = pd.date_range(startdate,enddate, freq='M')
 	
-	print("wrapper complete")
-	return monthly
+	sums = []
+	seq = ee.List.sequence(0, len(dt_idx))
+	
+	print("processing:")
+	print("{}".format(ImageCollection))
+	print("progress:")
+	
+	num_steps = seq.getInfo()
+
+	for i in num_steps:
+		if i % 5 == 0:
+			print(str((i / len(num_steps))*100)[:5] + " % ")
+
+		start = ee.Date(startdate).advance(i, 'month')
+		end = start.advance(1, 'month');
+
+		try:
+			im = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).sum().set('system:time_start', start.millis())
+			t2 = im.multiply(ee.Image.pixelArea()).multiply(scaling_factor).multiply(1e-6) # Multiply by pixel area in km^2
+
+			scale = t2.projection().nominalScale()
+			sumdict  = t2.reduceRegion(
+					reducer = ee.Reducer.sum(),
+					geometry = area,
+					scale = scale)
+
+			result = sumdict.getInfo()[var] * 1e-5 # cm to km
+			sums.append(result)
+		except:
+			sums.append(np.nan) # If there is no grace data that month, append a np.nan 
+
+	return sums
 
 def get_ims(dataset, years, months, area, return_dates = False, table = False, monthly_mean = False):
 	
