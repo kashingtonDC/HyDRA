@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# This script retrieves surface water data for the Central Valley and Central Valley Watershed. 
+# This script retrieves surface water data for the Central Valley and Central Valley Watershed. It writes shapefiles to "shape" and results to "data"
 
 import os
 import geopandas as gp
@@ -13,16 +13,7 @@ import io
 import requests
 import urllib.request
 
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-from matplotlib.patches import Patch
-from matplotlib.lines import Line2D
-
-from descartes import PolygonPatch
-from matplotlib.collections import PatchCollection
-from matplotlib.patches import Polygon
-from mpl_toolkits.basemap import Basemap
-from mpl_toolkits.axes_grid.inset_locator import inset_axes
+from functools import reduce
 from climata.usgs import DailyValueIO
 from shapely.geometry import Point
 from shapely.ops import cascaded_union
@@ -137,32 +128,66 @@ def streamflow():
 
 	hu4 = gp.GeoDataFrame(pd.concat(gdfs, ignore_index=True))
 
-
+	# Loop through the subwatersheds, and extract the streamflow data 
 	gdfs = []
-	qs = []
-	ds = []
-	ids = []
+	daily_dfs = []
 
-	for i in hu4['HUC8']:
-		print ("processing " + i)
-		gdf, q, d, i = get_streamflow(i)
+	for i in hu4['HUC8'][:]:
+		
+		gauge_id = i
+
+		# Call streamflow getter
+		gdf, q, d, gid = get_streamflow(gauge_id)
+		gdf['gauge_id'] = np.array(gid)
+		
+		print("Processing {} stations for HUC {}".format(str(len(gid)),gauge_id))
+
+		if len(q) == 0 & len(d) == 0: 
+			print('no streamflow data for HUC {}'.format(gauge_id))
+			continue
+		
+		# loop through the gauge stations in that huc and build a dataframe 
+		hucdfs = []
+		for idx, x in enumerate(gid):
+			flows = np.array(q[idx]) * 0.0283168 # convert cfs to cms
+			dates = d[idx]
+			sdf = pd.DataFrame(flows, dates)
+			sdf.columns = [x]
+			hucdfs.append(sdf)
+		
+		hucdf = reduce(lambda x, y: pd.merge(x, y, how = 'outer', left_index = True, right_index = True), hucdfs)
+		daily_dfs.append(hucdf)
 		gdfs.append(gdf)
-		qs.append(q)
-		ds.append(d)
-		ids.append(i)
 
+	# Compile the dfs and gdfs 
 
-	# Un-nest the lists
-	q_f = np.array([item for sublist in qs for item in sublist])
-	d_f = np.array([item for sublist in ds for item in sublist])
-	ids_f = [item for sublist in ids for item in sublist]
+	# The site data
+	master_df = reduce(lambda x, y: pd.merge(x, y, how = 'outer', left_index = True, right_index = True), daily_dfs)
+	master_df.to_csv("../data/daily_q_data.csv")
 
-
-	# Make a gdf of the stations and join the lists of q, ID and dates
+	# The geographic data  
 	stations_gdf = gp.GeoDataFrame(pd.concat(gdfs, ignore_index=True, sort = False))
-	stations_gdf['Q'] = q_f
-	stations_gdf['ID'] = ids_f
-	stations_gdf['dates'] = d_f
+
+	# Compute the mean and variance for each site 
+	outdfs = []
+
+	for i in master_df.columns.unique():
+		monthlydata = master_df[i].resample("M").mean()* 2.628e+6 * 1e-9 # convert seconds to months, m^3 to km^3
+		mean = np.mean(monthlydata) 
+		var = np.var(monthlydata) 
+		start =  np.array(monthlydata.index[0].strftime("%Y-%m-%d %H:%M:%S"))
+		end = np.array(monthlydata.index[-1].strftime("%Y-%m-%d %H:%M:%S"))
+		sdf = pd.DataFrame([str(i), mean, var,str(start),str(end)]).T
+		sdf.columns = ["gauge_id","q_km3_avg", "q_km3_var", "startdate", "enddate"]
+		sdf2 = sdf.astype({"gauge_id": str, "q_km3_avg": float, "q_km3_var": float, "startdate": str, "enddate": str})
+
+		outdfs.append(sdf2)
+
+	monthly_means = pd.concat(outdfs)
+	mgdf = pd.merge(stations_gdf, monthly_means, left_on = "gauge_id", right_on = "gauge_id")
+	fingdf = mgdf.drop([mgdf.columns[0]],axis = 1)
+
+	fingdf.to_file("../shape/usgs_gauges.shp")
 
 	# Inflows from xiao et al (2017)+ ones I added in last row 
 	stations = [11446500, 11376550, 11423800, 11384000, 11390000 ,11451760,
@@ -174,41 +199,42 @@ def streamflow():
 			   
 				11208818, 11204100, 11200800, 11218400, 11289000, 11323500
 			   ]
+	stations = [str(x) for x in stations]
+
+	# for gdf of inflow stations 
+	inflow_gdf = mgdf[mgdf['gauge_id'].isin(stations)]
 
 	# The CA Aqueduct takes water out of the CV: 
 	stations_out = ["11109396"]
 
-	stations = [str(x) for x in stations]
+	inflow = []
+	outflow = []
 
 	# Separate the inflows / outflows 
-	inflow = stations_gdf[stations_gdf['ID'].isin(stations)]
-	outflow = stations_gdf[stations_gdf.ID == "11109396"]
+	for i in master_df.columns:
+		if i in stations:
+			inflow.append(master_df[i].resample("M").mean()*2.628e+6 * 1e-9)# convert seconds to months, m^3 to km^3
+		if i in stations_out:
+			outflow.append(master_df[i].resample("M").mean()*2.628e+6 * 1e-9)# convert seconds to months, m^3 to km^3
 
-	in_dfs = []
+	inflow_df = pd.concat(inflow, axis = 1)
+	outflow_df = pd.concat(outflow)
 
-	for idx, x in enumerate(q_f):
-		sdf1 = pd.DataFrame(q_f[idx], d_f[idx], columns = [ids_f[idx]])
-		in_dfs.append(sdf1)
+	inflow_sum = inflow_df.sum(axis =1)
+	outflow_sum = outflow_df.sum()
 
-	# Filter for the stations of interest
-	fin = pd.concat(in_dfs, axis = 1)
+	# Calculate the net inflow. For months with no data, replace with mean 
+	net_flow = inflow_sum - outflow_df.fillna(outflow_df.mean())
 
-	fin_in = fin.loc[:, fin.columns.str.contains('|'.join(stations))]
+	print("mean monthly inflow = {}".format(np.mean(net_flow)))
 
-	# calc the daily sums in, subtract the CA aqueduct outflow. When outflow is nan use mean outflow 
-	fin_in['sum_cfs'] = fin_in.sum(axis = 1) - fin["11109396"].fillna(fin["11109396"].mean())
+	# Write 
+	nfdf = pd.DataFrame(net_flow)
+	nfdf.columns = ['net_inflow_km3']
 
-	# Calc the monthly sums
-	sum_df = pd.DataFrame(fin_in['sum_cfs'].resample('M').sum())
+	net_flow.to_csv("../data/Qs_in_monthly.csv")
 
-	# Convert cfs to km3 / mon
-	sum_df['sum_km3'] = sum_df.sum_cfs * 0.0283168 * 1e-9 * 86400 # convert CFS to cms (0.0283168), CMS to km^3 /s (1e-9) , km^3/s to km^3 / mon (86400)
-	sum_df.to_csv("../data/Qs_in_monthly.csv")
-
-	print('average total streamflow volume = {} km^3'.format(np.mean(sum_df)))
-
-
-	return(stations)
+	return(net_flow)
 
 
 def dayflow():
@@ -293,6 +319,11 @@ def main():
 	cvws_Sres = res_storage(cvws_shp, "../data/cvws_Sres.csv")
 	dayf = dayflow()
 	sf = streamflow()
+	netflow = sf - dayf
+
+	netflow.to_csv("../data/net_flow_monthly.csv")
+
+	print("Complete =======" * 20 )
 
 if __name__ == '__main__':
 	main()
