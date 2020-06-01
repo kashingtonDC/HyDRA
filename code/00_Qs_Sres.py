@@ -7,12 +7,12 @@ import os
 import geopandas as gp
 import pandas as pd
 import numpy as np
-import shapely
 import datetime
 import io
 import requests
 import urllib.request
 
+from tqdm import tqdm
 from functools import reduce
 from climata.usgs import DailyValueIO
 from shapely.geometry import Point
@@ -52,8 +52,8 @@ def get_streamflow(huc8):
 	'''
 	
 	data =  DailyValueIO (
-			start_date="2001-01-01", 
-			end_date="2018-01-01",
+			start_date="1997-01-01", 
+			end_date="2020-01-01",
 			basin=huc8,
 			parameter="00060",
 			)
@@ -132,7 +132,7 @@ def streamflow():
 	gdfs = []
 	daily_dfs = []
 
-	for i in hu4['HUC8'][:]:
+	for i in tqdm(hu4['HUC8'][:]):
 		
 		gauge_id = i
 
@@ -271,13 +271,13 @@ def res_storage(shp, outfn):
 	within_gdf = gp.sjoin(reservoirs, gdf, how='inner', op='within')
 	
 	# Download Storage (SensorNums = 15) data by query str:
-	start = datetime.datetime(2001, 1, 1)
-	end = datetime.datetime(2019, 1, 1)
+	start = datetime.datetime(1997, 1, 1)
+	end = datetime.datetime(2020, 1, 1)
 	dt_idx = pd.date_range(start,end, freq='M')
 
 	data = {}
 
-	for i in within_gdf.ID:
+	for i in tqdm(within_gdf.ID):
 		print("processing " + i )
 		url = "https://cdec.water.ca.gov/dynamicapp/req/CSVDataServlet?Stations={}&SensorNums=15&dur_code=M&Start=2001-01-01&End=2018-12-01".format(i)
 		urlData = requests.get(url).content
