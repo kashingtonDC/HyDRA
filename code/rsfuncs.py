@@ -10,6 +10,7 @@ import os
 import ee
 import datetime
 import time
+import tqdm
 
 import geopandas as gp
 import numpy as np
@@ -18,10 +19,15 @@ import pandas as pd
 from dateutil.relativedelta import relativedelta
 from shapely.ops import unary_union
 from pandas.tseries.offsets import MonthEnd
+from tqdm import tqdm_notebook as tqdm
 
 
-'''
+''' 
+#############################################################################################################
+
 Helpers
+
+#############################################################################################################
 '''
 
 
@@ -50,10 +56,15 @@ def dl_2_df(dict_list, dt_idx):
 	return alldata
 
 
-'''
-Vector functions for geographic areas
+''' 
+#############################################################################################################
+
+Vector / Shapefile / EE Geometry Functions
+
+#############################################################################################################
 '''
 
+# TODO: Make a single function that converts shp (multipoly / single poly / points / ) --> EE geom
 
 def gdf_to_ee_poly(gdf):
 
@@ -66,6 +77,7 @@ def gdf_to_ee_poly(gdf):
 	return area
 
 def gdf_to_ee_multipoly(gdf):
+
 	lls = gdf.geometry.iloc[0]
 	mps = [x for x in lls]
 	multipoly = []
@@ -78,7 +90,7 @@ def gdf_to_ee_multipoly(gdf):
 	return ee.Geometry.MultiPolygon(multipoly)
 
 def get_area(gdf, fast = True):
-	
+
 	t = gdf.buffer(0.001).unary_union
 	d  = gp.GeoDataFrame(geometry=gp.GeoSeries(t))
 	if fast:
@@ -92,7 +104,7 @@ def get_area(gdf, fast = True):
 def gen_polys(geometry, dx=0.5, dy=0.5):
 	
 	'''
-	Return ee.ImaceCollection of polygons used to submit full res (30m landsat; 10m sentinel) resolution
+	Return ee.ImaceCollection of polygons used to submit full res (30m landsat; 10m sentinel) resolution for large areas 
 	'''
 	
 	bounds = ee.Geometry(geometry).bounds()
@@ -126,85 +138,43 @@ def gen_polys(geometry, dx=0.5, dy=0.5):
 	return ee.FeatureCollection(ee.List(polys))
 
 
+''' 
+#############################################################################################################
+
+EE Functions
+
+#############################################################################################################
 '''
-Functions to handle Remote Sensing data, mostly in earth engine 
-'''
 
-def get_data(dataset, year, month, area):
+def calc_monthly_sum(dataset, startdate, enddate, area):
 	'''
-	calculates the monthly sum for earth engine datasets
-	'''
-
-	col = dataset[0]
-	var = dataset[1]
-	scaling_factor = dataset[2]
-
-	t = col.filter(ee.Filter.calendarRange(year, year, 'year')).filter(ee.Filter.calendarRange(month, month, 'month')).select(var).filterBounds(area).sum()
-	t2 = t.multiply(1e-3).multiply(ee.Image.pixelArea()).multiply(scaling_factor).multiply(1e-9)
-	# convert mm to m, multiply by pixel area (m^2), multiply by scaling factor (given opr calculated from earth engine), convert m^3 to km^3
-	scale = t2.projection().nominalScale()
-	sumdict  = t2.reduceRegion(
-		reducer = ee.Reducer.sum(), 
-		geometry = area,
-		scale = scale)
+	Calculates monthly sums (pd.Dataframe) for EE data given startdate, enddate, and area
+	Datasets are stored in `data` dict below.
+	Note the "scaling_factor" parameter, 
+	which is provided by EE for each dataset, and further scaled by temporal resolution to achieve monthly resolution
+	This is explicitly written in the `data` dict 
 	
-	result = sumdict.getInfo()[var]
-	
-	return result
-
-
-def monthly_sum(dataset, years, months, area):
-	
-	'''
-	Wrapper for `get_data` that takes a dataset and an area
-	'''
-	monthly = []
-
-	for year in years:
-		print(year)
-		for month in months:
-			r = get_data(dataset, year, month, area)
-			monthly.append(r)
-			time.sleep(5) # so ee doens't freak out 
-	
-	print("wrapper complete")
-	return monthly
-
-
-def calc_monthly_sum(dataset, years, months, area):
-	
-	'''
-	Calculates monthly sum for hourly data. works for GLDAS / NLDAS 
+	EE will throw a cryptic error if the daterange you input is not valid for the product of interest. 
 	'''
 	ImageCollection = dataset[0]
 	var = dataset[1]
 	scaling_factor = dataset[2]
-			
-	period_start = datetime.datetime(years[0], 1, 1)
-	start_date = period_start.strftime("%Y-%m-%d")
-	period_end = datetime.datetime(years[-1]+1, 1, 1)
-	dt_idx = pd.date_range(period_start,period_end, freq='M')
 	
+	dt_idx = pd.date_range(startdate,enddate, freq='MS')
 	sums = []
-	seq = ee.List.sequence(0, len(dt_idx))
-
-	# Progress bar 
+	seq = ee.List.sequence(0, len(dt_idx)-1)
 	num_steps = seq.getInfo()
-	print("processing:")
-	print("{}".format(ImageCollection))
-	print("progress:")
 
-	for i in num_steps:
-		if i % 5 == 0:
-			print(str((i / len(num_steps))*100)[:5] + " % ")
-	
-		start = ee.Date(start_date).advance(i, 'month')
+	for i in tqdm(num_steps):
+
+		start = ee.Date(startdate).advance(i, 'month')
 		end = start.advance(1, 'month');
+
 		im = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).sum().set('system:time_start', start.millis())
-		ic = im.multiply(1e-3).multiply(ee.Image.pixelArea()).multiply(scaling_factor).multiply(1e-9)
-		scale = ic.projection().nominalScale()
+		scale = im.projection().nominalScale()
+		scaled_im = im.multiply(scaling_factor).multiply(ee.Image.pixelArea()).multiply(1e-12) # mm --> km^3
 		
-		sumdict  = ic.reduceRegion(
+		sumdict  = scaled_im.reduceRegion(
 			reducer = ee.Reducer.sum(),
 			geometry = area,
 			scale = scale,
@@ -212,49 +182,49 @@ def calc_monthly_sum(dataset, years, months, area):
 
 		total = sumdict.getInfo()[var]
 		sums.append(total)
-
-	return sums
+		
+	sumdf = pd.DataFrame(np.array(sums), dt_idx)
+	sumdf.columns = [var]
+	df = sumdf.astype(float)
+		
+	return df
 
 def calc_monthly_mean(dataset, startdate, enddate, area):
-	
 	'''
-	Calculates monthly mean for sub monthly data
+	Same as above, but calculates mean (useful for anoamly detection, assimilation of state variables like SM and SWE)
 	'''
 	ImageCollection = dataset[0]
 	var = dataset[1]
 	scaling_factor = dataset[2]
-			
-	dt_idx = pd.date_range(startdate,enddate, freq='M')
 	
-	means = []
-	seq = ee.List.sequence(0, len(dt_idx))
-
-	# Progress bar 
+	dt_idx = pd.date_range(startdate,enddate, freq='MS')
+	sums = []
+	seq = ee.List.sequence(0, len(dt_idx)-1)
 	num_steps = seq.getInfo()
-	print("processing:")
-	print("{}".format(ImageCollection))
-	print("progress:")
 
-	for i in num_steps:
-		if i % 5 == 0:
-			print(str((i / len(num_steps))*100)[:5] + " % ")
-	
+	for i in tqdm(num_steps):
+
 		start = ee.Date(startdate).advance(i, 'month')
 		end = start.advance(1, 'month');
+
 		im = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).mean().set('system:time_start', start.millis())
-		ic = im.multiply(1e-3).multiply(ee.Image.pixelArea()).multiply(1e-9)
-		scale = ic.projection().nominalScale()
+		scale = im.projection().nominalScale()
+		scaled_im = im.multiply(scaling_factor).multiply(ee.Image.pixelArea()).multiply(1e-12) # mm --> km^3
 		
-		sumdict  = ic.reduceRegion(
+		sumdict  = scaled_im.reduceRegion(
 			reducer = ee.Reducer.mean(),
 			geometry = area,
 			scale = scale,
 			bestEffort = True)
 
 		total = sumdict.getInfo()[var]
-		means.append(total)
-
-	return means
+		sums.append(total)
+		
+	sumdf = pd.DataFrame(np.array(sums), dt_idx)
+	sumdf.columns = [var]
+	df = sumdf.astype(float)
+		
+	return df
 
 def get_grace(dataset, startdate, enddate, area):
 
@@ -281,7 +251,7 @@ def get_grace(dataset, startdate, enddate, area):
 		end = start.advance(1, 'month');
 
 		try:
-			im = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).sum().set('system:time_start', start.millis())
+			im = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).sum().set('system:time_start', end.millis())
 			t2 = im.multiply(ee.Image.pixelArea()).multiply(scaling_factor).multiply(1e-6) # Multiply by pixel area in km^2
 
 			scale = t2.projection().nominalScale()
@@ -297,43 +267,44 @@ def get_grace(dataset, startdate, enddate, area):
 
 	return sums
 
-def get_ims(dataset, years, months, area, return_dates = False, table = False, monthly_mean = False):
+def get_ims(dataset, startdate,enddate, area, return_dates = False, table = False, monthly_mean = False,  monthly_sum = False):
 	
 	'''
 	Returns gridded images for EE datasets 
 	'''
+
+	if monthly_mean:
+		if monthly_sum:
+			raise ValueError("cannot perform mean and sum reduction at the same time")				
+
 	ImageCollection = dataset[0]
 	var = dataset[1]
 	scaling_factor = dataset[2]
 	native_res = dataset[3]
-			
-	period_start = datetime.datetime(years[0], 1, 1)
-	start_date = period_start.strftime("%Y-%m-%d")
-	period_end = datetime.datetime(years[-1]+1, 1, 1)
-	dt_idx = pd.date_range(period_start,period_end, freq='M')
-	seq = ee.List.sequence(0, len(dt_idx))
 
+	dt_idx = pd.date_range(startdate,enddate, freq='MS')
 	ims = []
-	
+	seq = ee.List.sequence(0, len(dt_idx)-1)
+	num_steps = seq.getInfo()
+
 	# TODO: Make this one loop ?
 
-	num_steps = seq.getInfo()
 	print("processing:")
 	print("{}".format(ImageCollection))
-	print("progress:")
 
-	for i in num_steps:
-		if i % 5 == 0:
-			print(str((i / len(num_steps))*100)[:5] + " % ")
+	for i in tqdm(num_steps):
 
-		start = ee.Date(start_date).advance(i, 'month')
+		start = ee.Date(startdate).advance(i, 'month')
 		end = start.advance(1, 'month');
 
 		if monthly_mean:
-			im1 = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).set('system:time_start', start.millis()).mean()
+			im1 = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).mean().set('system:time_start', end.millis())
+			im = ee.ImageCollection(im1)
+		elif monthly_sum:
+			im1 = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).sum().set('system:time_start', end.millis())
 			im = ee.ImageCollection(im1)
 		else:
-			im = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).set('system:time_start', start.millis())
+			im = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).set('system:time_start', end.millis())
 		
 		result = im.getRegion(area,native_res,"epsg:4326").getInfo()
 		ims.append(result)
@@ -344,8 +315,11 @@ def get_ims(dataset, years, months, area, return_dates = False, table = False, m
 
 	print("postprocesing")
 
-	for i in ims:
-		df = df_from_ee_object(i)
+	for im in ims:
+		header, data = im[0], im[1:]
+
+		df = pd.DataFrame(np.column_stack(data).T, columns = header).astype(float)
+		im = array_from_df(df, var)
 
 		if table:
 			results.append(df)
@@ -357,13 +331,13 @@ def get_ims(dataset, years, months, area, return_dates = False, table = False, m
 			t1 = df[df.id==i]
 			arr = array_from_df(t1,var)
 			arr[arr == 0] = np.nan
-			images.append(arr)
+			images.append(arr*scaling_factor)# This is the only good place to apply the scaling factor. 
 
 			if return_dates:
 				date = df.time.iloc[idx]
 				dates.append(datetime.datetime.fromtimestamp(date/1000.0))
 
-		results.append(images)
+		results.append(images) 
 
 	print("====COMPLETE=====")
 
@@ -373,13 +347,6 @@ def get_ims(dataset, years, months, area, return_dates = False, table = False, m
 	else:   
 		return [item for sublist in results for item in sublist] 
 
-def df_from_ee_object(imcol):
-	'''
-	Converts the return of a getRegion ee call to a pandas dataframe 
-	'''
-	df = pd.DataFrame(imcol, columns = imcol[0])
-	df = df[1:]
-	return(df)
 
 def array_from_df(df, variable):    
 
@@ -486,6 +453,14 @@ def freq_hist(eeImage, area, scale, var_name):
 	return freq_dict
 
 
+
+'''
+Functions to handle Remote Sensing data in NetCDF format
+'''
+
+
+
+
 def load_data():
 
 	'''
@@ -508,25 +483,25 @@ def load_data():
 	###################
 
 	# https://developers.google.com/earth-engine/datasets/catalog/MODIS_006_MOD16A2
-	data['modis_aet'] = [ee.ImageCollection('MODIS/006/MOD16A2'), "ET", 0.1]
-	data['modis_pet'] = [ee.ImageCollection('MODIS/006/MOD16A2'), "PET", 0.1]
+	data['modis_aet'] = [ee.ImageCollection('MODIS/006/MOD16A2'), "ET", 0.1, 1000]
+	data['modis_pet'] = [ee.ImageCollection('MODIS/006/MOD16A2'), "PET", 0.1, 1000]
 
-	data['gldas_aet'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), 'Evap_tavg', 86400*30 / 240] 
-	data['gldas_pet'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), 'PotEvap_tavg', 1 / 240] 
+	data['gldas_aet'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), 'Evap_tavg', 86400*30 / 240 , 25000] 
+	data['gldas_pet'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), 'PotEvap_tavg', 1 / 240, 25000] 
 
 	# https://developers.google.com/earth-engine/datasets/catalog/NASA_NLDAS_FORA0125_H002
-	data['nldas_pet'] = [ee.ImageCollection('NASA/NLDAS/FORA0125_H002'), 'potential_evaporation', 1]
+	data['nldas_pet'] = [ee.ImageCollection('NASA/NLDAS/FORA0125_H002'), 'potential_evaporation', 1, 12500]
 
 	# https://developers.google.com/earth-engine/datasets/catalog/IDAHO_EPSCOR_TERRACLIMATE
-	data['tc_aet'] = [ee.ImageCollection('IDAHO_EPSCOR/TERRACLIMATE'), "aet", 0.1]
-	data['tc_pet'] = [ee.ImageCollection('IDAHO_EPSCOR/TERRACLIMATE'), "pet", 0.1]
+	data['tc_aet'] = [ee.ImageCollection('IDAHO_EPSCOR/TERRACLIMATE'), "aet", 0.1 , 4000]
+	data['tc_pet'] = [ee.ImageCollection('IDAHO_EPSCOR/TERRACLIMATE'), "pet", 0.1, 4000]
 
 	# https://developers.google.com/earth-engine/datasets/catalog/IDAHO_EPSCOR_GRIDMET
-	data['gmet_etr'] = [ee.ImageCollection('IDAHO_EPSCOR/GRIDMET'), "etr", 1]
-	data['gmet_eto'] = [ee.ImageCollection('IDAHO_EPSCOR/GRIDMET'), "eto", 1]
+	data['gmet_etr'] = [ee.ImageCollection('IDAHO_EPSCOR/GRIDMET'), "etr", 1 , 1000]
+	data['gmet_eto'] = [ee.ImageCollection('IDAHO_EPSCOR/GRIDMET'), "eto", 1, 1000]
 
 	# https://developers.google.com/earth-engine/datasets/catalog/NASA_FLDAS_NOAH01_C_GL_M_V001
-	data['fldas_aet'] = [ee.ImageCollection('NASA/FLDAS/NOAH01/C/GL/M/V001'), "Evap_tavg", 86400*30]
+	data['fldas_aet'] = [ee.ImageCollection('NASA/FLDAS/NOAH01/C/GL/M/V001'), "Evap_tavg", 86400*30, 12500]
 
 	###################
 	##### P data ######
@@ -535,7 +510,7 @@ def load_data():
 	data['trmm']  =  [ee.ImageCollection('TRMM/3B43V7'), "precipitation", 720, 25000]
 	data['prism'] = [ee.ImageCollection("OREGONSTATE/PRISM/AN81m"), "ppt", 1, 4000]
 	data['chirps'] = [ee.ImageCollection('UCSB-CHG/CHIRPS/PENTAD'), "precipitation", 1, 5500]
-	data['persia'] = [ee.ImageCollection("NOAA/PERSIANN-CDR"), "precipitation", 1, 25000]
+	data['persiann'] = [ee.ImageCollection("NOAA/PERSIANN-CDR"), "precipitation", 1, 25000]
 	data['dmet'] = [ee.ImageCollection('NASA/ORNL/DAYMET_V3'), "prcp", 1, 4000]
 
 	#################### 
@@ -548,34 +523,38 @@ def load_data():
 	####################
 	##### R data #######
 	####################
-	data['tc_r'] = [ee.ImageCollection('IDAHO_EPSCOR/TERRACLIMATE'), "ro", 1]
-	data['fldas_r'] = [ee.ImageCollection("NASA/FLDAS/NOAH01/C/GL/M/V001"), "Qs_tavg", 86400*24]
+	data['tc_r'] = [ee.ImageCollection('IDAHO_EPSCOR/TERRACLIMATE'), "ro", 1, 4000]
+	data['fldas_r'] = [ee.ImageCollection("NASA/FLDAS/NOAH01/C/GL/M/V001"), "Qs_tavg", 86400*24, 12500]
 
 	# GLDAS
-	data['ssr'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "Qs_acc", 1]
-	data['bfr'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "Qsb_acc", 1]
-	data['qsm'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "Qsm_acc", 1]
+	data['ssr'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "Qs_acc", 1, 25000]
+	data['bfr'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "Qsb_acc", 1, 25000 ]
+	data['qsm'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "Qsm_acc", 1, 25000]
 
 	#####################
 	##### SM data #######
 	#####################
 	data['tc_sm'] = [ee.ImageCollection('IDAHO_EPSCOR/TERRACLIMATE'), "soil", 0.1, 4000]
-	data['gldas_sm'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "RootMoist_inst", 1 / 240, 25000]
+
+	data['gldas_rzsm'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "RootMoist_inst", 1, 25000]
 
 	data['sm1'] = [ee.ImageCollection("NASA/FLDAS/NOAH01/C/GL/M/V001"), "SoilMoi00_10cm_tavg", 1 , 12500]
 	data['sm2'] = [ee.ImageCollection("NASA/FLDAS/NOAH01/C/GL/M/V001"), "SoilMoi10_40cm_tavg", 1 , 12500]
 	data['sm3'] = [ee.ImageCollection("NASA/FLDAS/NOAH01/C/GL/M/V001"), "SoilMoi40_100cm_tavg", 1 , 12500]
 	data['sm4'] = [ee.ImageCollection("NASA/FLDAS/NOAH01/C/GL/M/V001"), "SoilMoi100_200cm_tavg", 1 , 12500]
 
-	data['gsm1'] = [ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H"), "SoilMoi0_10cm_inst", 1/240 ,25000]
-	data['gsm2'] = [ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H"), "SoilMoi10_40cm_inst", 1/240 ,25000]
-	data['gsm3'] = [ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H"), "SoilMoi40_100cm_inst", 1/240 ,25000]
-	data['gsm4'] = [ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H"), "SoilMoi100_200cm_inst", 1/240 ,25000]
+	data['gsm1'] = [ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H"), "SoilMoi0_10cm_inst", 1 ,25000]
+	data['gsm2'] = [ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H"), "SoilMoi10_40cm_inst", 1 ,25000]
+	data['gsm3'] = [ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H"), "SoilMoi40_100cm_inst", 1 ,25000]
+	data['gsm4'] = [ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H"), "SoilMoi100_200cm_inst", 1 ,25000]
 
 	data['smap_ssm'] = [ee.ImageCollection("NASA_USDA/HSL/SMAP_soil_moisture"), "ssm", 1 ,25000]
 	data['smap_susm'] = [ee.ImageCollection("NASA_USDA/HSL/SMAP_soil_moisture"), "susm", 1 ,25000]
 	data['smap_smp'] = [ee.ImageCollection("NASA_USDA/HSL/SMAP_soil_moisture"), "smp", 1 ,25000]
 
+	data['smos_ssm'] = [ee.ImageCollection("NASA_USDA/HSL/soil_moisture"), "ssm", 1 ,25000]
+	data['smos_susm'] = [ee.ImageCollection("NASA_USDA/HSL/soil_moisture"), "susm", 1 ,25000]
+	data['smos_smp'] = [ee.ImageCollection("NASA_USDA/HSL/soil_moisture"), "smp", 1 ,25000]
 	############################
 	##### Elevation data #######
 	############################
