@@ -66,10 +66,12 @@ Vector / Shapefile / EE Geometry Functions
 
 # TODO: Make a single function that converts shp (multipoly / single poly / points / ) --> EE geom
 
-def gdf_to_ee_poly(gdf):
+def gdf_to_ee_poly(gdf, simplify = True):
 
-	t = gdf.geometry.simplify(0.01)
-	lls = t.geometry.iloc[0]
+	if simplify:
+		gdf = gdf.geometry.simplify(0.01)
+	
+	lls = gdf.geometry.iloc[0]
 	x,y = lls.exterior.coords.xy
 	coords = [list(zip(x,y))]
 	area = ee.Geometry.Polygon(coords)
@@ -102,41 +104,40 @@ def get_area(gdf, fast = True):
 	return area
 
 def gen_polys(geometry, dx=0.5, dy=0.5):
-	
-	'''
-	Return ee.ImaceCollection of polygons used to submit full res (30m landsat; 10m sentinel) resolution for large areas 
-	'''
-	
-	bounds = ee.Geometry(geometry).bounds()
-	coords = ee.List(bounds.coordinates().get(0))
-	ll = ee.List(coords.get(0))
-	ur = ee.List(coords.get(2))
-	xmin = ll.get(0)
-	xmax = ur.get(0)
-	ymin = ll.get(1)
-	ymax = ur.get(1)
+    
+    '''
+    Input: ee.Geometry
+    Return: ee.ImaceCollection of polygons 
+    Use: Subpolys used to submit full res (30m landsat; 10m sentinel) resolution for large areas 
+    '''
+    
+    bounds = ee.Geometry(geometry).bounds()
+    coords = ee.List(bounds.coordinates().get(0))
+    ll = ee.List(coords.get(0))
+    ur = ee.List(coords.get(2))
+    xmin = ll.get(0)
+    xmax = ur.get(0)
+    ymin = ll.get(1)
+    ymax = ur.get(1)
 
-	latlist = ee.List.sequence(ymin, ymax, dx)
-	lonlist = ee.List.sequence(xmin, xmax, dy)
-	
-	polys = []
-	
-	for lon in lonlist.getInfo():
-		for lat in latlist.getInfo():
-		
-			def make_rect(lat, lon):
-				lattemp = ee.Number(lat)
-				lontemp = ee.Number(lon)
-				uplattemp = lattemp.add(dy)
-				lowlontemp = lontemp.add(dx)
+    xx = ee.List.sequence(xmin, xmax, dx)
+    yy = ee.List.sequence(ymin, ymax, dy)
+    
+    polys = []
 
-				return ee.Feature(ee.Geometry.Polygon([[lontemp, lattemp],[lowlontemp, lattemp],[lowlontemp, uplattemp],[lontemp, uplattemp]]))
-			
-			poly = make_rect(lat,lon)
-			polys.append(poly)
-	
-	return ee.FeatureCollection(ee.List(polys))
+    for x in tqdm(xx.getInfo()):
+        for y in yy.getInfo():
+            x1 = ee.Number(x).subtract(ee.Number(dx).multiply(0.5))
+            x2 = ee.Number(x).add(ee.Number(dx).multiply(0.5))
+            y1 = ee.Number(y).subtract(ee.Number(dy).multiply(0.5))
+            y2 = ee.Number(y).add(ee.Number(dy).multiply(0.5))
+            geomcoords = ee.List([x1, y1, x2, y2]);
+            rect = ee.Algorithms.GeometryConstructors.Rectangle(geomcoords);
+            polys.append(ee.Feature(rect))
 
+
+    return ee.FeatureCollection(ee.List(polys)).filterBounds(geometry)
+  
 
 ''' 
 #############################################################################################################
@@ -159,26 +160,30 @@ def calc_monthly_sum(dataset, startdate, enddate, area):
 	ImageCollection = dataset[0]
 	var = dataset[1]
 	scaling_factor = dataset[2]
+	resolution = dataset[3]
 	
 	dt_idx = pd.date_range(startdate,enddate, freq='MS')
 	sums = []
 	seq = ee.List.sequence(0, len(dt_idx)-1)
 	num_steps = seq.getInfo()
 
+	print("processing:")
+	print("{}".format(ImageCollection.first().getInfo()['id']))
+
 	for i in tqdm(num_steps):
 
 		start = ee.Date(startdate).advance(i, 'month')
 		end = start.advance(1, 'month');
 
-		im = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).sum().set('system:time_start', start.millis())
+		im = ee.Image(ImageCollection.select(var).filterDate(start, end).sum().set('system:time_start', start.millis()))
 		scale = im.projection().nominalScale()
 		scaled_im = im.multiply(scaling_factor).multiply(ee.Image.pixelArea()).multiply(1e-12) # mm --> km^3
 		
 		sumdict  = scaled_im.reduceRegion(
 			reducer = ee.Reducer.sum(),
 			geometry = area,
-			scale = scale,
-			bestEffort = True)
+			scale = resolution,
+			bestEffort= True)
 
 		total = sumdict.getInfo()[var]
 		sums.append(total)
@@ -202,6 +207,9 @@ def calc_monthly_mean(dataset, startdate, enddate, area):
 	seq = ee.List.sequence(0, len(dt_idx)-1)
 	num_steps = seq.getInfo()
 
+	print("processing:")
+	print("{}".format(ImageCollection.first().getInfo()['id']))
+
 	for i in tqdm(num_steps):
 
 		start = ee.Date(startdate).advance(i, 'month')
@@ -212,7 +220,7 @@ def calc_monthly_mean(dataset, startdate, enddate, area):
 		scaled_im = im.multiply(scaling_factor).multiply(ee.Image.pixelArea()).multiply(1e-12) # mm --> km^3
 		
 		sumdict  = scaled_im.reduceRegion(
-			reducer = ee.Reducer.mean(),
+			reducer = ee.Reducer.sum(),
 			geometry = area,
 			scale = scale,
 			bestEffort = True)
@@ -238,14 +246,11 @@ def get_grace(dataset, startdate, enddate, area):
 	seq = ee.List.sequence(0, len(dt_idx))
 	
 	print("processing:")
-	print("{}".format(ImageCollection))
-	print("progress:")
+	print("{}".format(ImageCollection.first().getInfo()['id']))
 	
 	num_steps = seq.getInfo()
 
-	for i in num_steps:
-		if i % 5 == 0:
-			print(str((i / len(num_steps))*100)[:5] + " % ")
+	for i in tqdm(num_steps):
 
 		start = ee.Date(startdate).advance(i, 'month')
 		end = start.advance(1, 'month');
@@ -268,84 +273,88 @@ def get_grace(dataset, startdate, enddate, area):
 	return sums
 
 def get_ims(dataset, startdate,enddate, area, return_dates = False, table = False, monthly_mean = False,  monthly_sum = False):
-	
-	'''
-	Returns gridded images for EE datasets 
-	'''
+    
+    '''
+    Returns gridded images for EE datasets 
+    '''
 
-	if monthly_mean:
-		if monthly_sum:
-			raise ValueError("cannot perform mean and sum reduction at the same time")				
+    if monthly_mean:
+        if monthly_sum:
+            raise ValueError("cannot perform mean and sum reduction at the same time")              
 
-	ImageCollection = dataset[0]
-	var = dataset[1]
-	scaling_factor = dataset[2]
-	native_res = dataset[3]
+    ImageCollection = dataset[0]
+    var = dataset[1]
+    scaling_factor = dataset[2]
+    native_res = dataset[3]
 
-	dt_idx = pd.date_range(startdate,enddate, freq='MS')
-	ims = []
-	seq = ee.List.sequence(0, len(dt_idx)-1)
-	num_steps = seq.getInfo()
+    dt_idx = pd.date_range(startdate,enddate, freq='MS')
+    ims = []
+    seq = ee.List.sequence(0, len(dt_idx)-1)
+    num_steps = seq.getInfo()
 
-	# TODO: Make this one loop ?
+    # TODO: Make this one loop ?
 
-	print("processing:")
-	print("{}".format(ImageCollection))
+    print("processing:")
+    print("{}".format(ImageCollection.first().getInfo()['id']))
 
-	for i in tqdm(num_steps):
+    for i in tqdm(num_steps):
 
-		start = ee.Date(startdate).advance(i, 'month')
-		end = start.advance(1, 'month');
+        start = ee.Date(startdate).advance(i, 'month')
+        end = start.advance(1, 'month');
 
-		if monthly_mean:
-			im1 = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).mean().set('system:time_start', end.millis())
-			im = ee.ImageCollection(im1)
-		elif monthly_sum:
-			im1 = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).sum().set('system:time_start', end.millis())
-			im = ee.ImageCollection(im1)
-		else:
-			im = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).set('system:time_start', end.millis())
-		
-		result = im.getRegion(area,native_res,"epsg:4326").getInfo()
-		ims.append(result)
+        if monthly_mean:
+            im1 = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).mean().set('system:time_start', end.millis())
+            im = ee.ImageCollection(im1)
+        elif monthly_sum:
+            im1 = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).sum().set('system:time_start', end.millis())
+            im = ee.ImageCollection(im1)
+        else:
+            im = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).set('system:time_start', end.millis())
+        
+        result = im.getRegion(area,native_res,"epsg:4326").getInfo()
+        ims.append(result)
 
+#     return ims
+    results = []
+    dates = []
 
-	results = []
-	dates = []
+    print("postprocesing")
 
-	print("postprocesing")
+    for im in tqdm(ims):
+        header, data = im[0], im[1:]
 
-	for im in ims:
-		header, data = im[0], im[1:]
+        df = pd.DataFrame(np.column_stack(data).T, columns = header)
+        df.latitude = pd.to_numeric(df.latitude)
+        df.longitude = pd.to_numeric(df.longitude)
+        df[var] = pd.to_numeric(df[var])
 
-		df = pd.DataFrame(np.column_stack(data).T, columns = header).astype(float)
-		im = array_from_df(df, var)
+        if table:
+            results.append(df)
+            continue
 
-		if table:
-			results.append(df)
+        images = []
 
-		images = []
+        for idx,i in enumerate(df.id.unique()):
 
-		for idx,i in enumerate(df.id.unique()):
+            t1 = df[df.id==i]
+            arr = array_from_df(t1,var)
+            arr[arr == 0] = np.nan
+            images.append(arr*scaling_factor)# This is the only good place to apply the scaling factor. 
 
-			t1 = df[df.id==i]
-			arr = array_from_df(t1,var)
-			arr[arr == 0] = np.nan
-			images.append(arr*scaling_factor)# This is the only good place to apply the scaling factor. 
+            if return_dates:
+                date = df.time.iloc[idx]
+                dates.append(datetime.datetime.fromtimestamp(date/1000.0))
 
-			if return_dates:
-				date = df.time.iloc[idx]
-				dates.append(datetime.datetime.fromtimestamp(date/1000.0))
+        results.append(images) 
 
-		results.append(images) 
+    print("====COMPLETE=====")
 
-	print("====COMPLETE=====")
+    # Unpack the list of results 
+    if return_dates:
+        return [ [item for sublist in results for item in sublist], dates]
+    else:   
+        return [item for sublist in results for item in sublist] 
 
-	# Unpack the list of results 
-	if return_dates:
-		return [ [item for sublist in results for item in sublist], dates]
-	else:   
-		return [item for sublist in results for item in sublist] 
 
 
 def array_from_df(df, variable):    
@@ -389,14 +398,14 @@ def array_from_df(df, variable):
 
 # This is the staging area. Haven's used these in a while, or not tested altogether. 
 
-def img_to_arr(eeImage, var_name, area):
+def img_to_arr(eeImage, var_name, area, scale = 30):
 	temp = eeImage.select(var_name).clip(area)
 	latlon = eeImage.pixelLonLat().addBands(temp)
 	
 	latlon = latlon.reduceRegion(
 		reducer = ee.Reducer.toList(),
 		geometry = area, 
-		scale = 1000
+		scale = scale
 		)
 	
 	data = np.array((ee.Array(latlon.get(var_name)).getInfo()))
@@ -452,14 +461,43 @@ def freq_hist(eeImage, area, scale, var_name):
 	
 	return freq_dict
 
+''' 
+#############################################################################################################
 
+NetCDF Functions
 
+#############################################################################################################
 '''
-Functions to handle Remote Sensing data in NetCDF format
+
+def transform_from_latlon(lat, lon):
+    lat = np.asarray(lat)
+    lon = np.asarray(lon)
+    trans = Affine.translation(lon[0], lat[0])
+    scale = Affine.scale(lon[1] - lon[0], lat[1] - lat[0])
+    return trans * scale
+
+def rasterize(shapes, coords, fill=np.nan, **kwargs):
+    """Rasterize a list of (geometry, fill_value) tuples onto the given
+    xray coordinates. This only works for 1d latitude and longitude
+    arrays.
+    """
+    transform = transform_from_latlon(coords['lat'], coords['lon'])
+    out_shape = (len(coords['lat']), len(coords['lon']))
+    raster = features.rasterize(shapes, out_shape=out_shape,
+                                fill=fill, transform=transform,
+                                dtype=float, **kwargs)
+    return xr.DataArray(raster, coords=coords, dims=('lat', 'lon'))
+
+
+
+
+''' 
+#############################################################################################################
+
+EE Datasets
+
+#############################################################################################################
 '''
-
-
-
 
 def load_data():
 
@@ -493,8 +531,8 @@ def load_data():
 	data['nldas_pet'] = [ee.ImageCollection('NASA/NLDAS/FORA0125_H002'), 'potential_evaporation', 1, 12500]
 
 	# https://developers.google.com/earth-engine/datasets/catalog/IDAHO_EPSCOR_TERRACLIMATE
-	data['tc_aet'] = [ee.ImageCollection('IDAHO_EPSCOR/TERRACLIMATE'), "aet", 0.1 , 4000]
-	data['tc_pet'] = [ee.ImageCollection('IDAHO_EPSCOR/TERRACLIMATE'), "pet", 0.1, 4000]
+	data['tc_aet'] = [ee.ImageCollection('IDAHO_EPSCOR/TERRACLIMATE'), "aet", 0.1 , 1000]
+	data['tc_pet'] = [ee.ImageCollection('IDAHO_EPSCOR/TERRACLIMATE'), "pet", 0.1, 1000]
 
 	# https://developers.google.com/earth-engine/datasets/catalog/IDAHO_EPSCOR_GRIDMET
 	data['gmet_etr'] = [ee.ImageCollection('IDAHO_EPSCOR/GRIDMET'), "etr", 1 , 1000]
@@ -517,8 +555,9 @@ def load_data():
 	##### SWE data #####
 	####################
 	data['fldas_swe'] = [ee.ImageCollection('NASA/FLDAS/NOAH01/C/GL/M/V001'), "SWE_inst", 1 , 12500]
-	data['gldas_swe'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "SWE_inst", 1 / 240 , 25000]
+	data['gldas_swe'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "SWE_inst", 1 , 25000]
 	data['dmet_swe'] = [ee.ImageCollection('NASA/ORNL/DAYMET_V3'), "swe", 1, 4000] # Reduced from 1000 because the query times out over the whole CVW 
+	data['tc_swe'] = [ee.ImageCollection('IDAHO_EPSCOR/TERRACLIMATE'), "swe", 1, 4000]
 
 	####################
 	##### R data #######
@@ -527,9 +566,9 @@ def load_data():
 	data['fldas_r'] = [ee.ImageCollection("NASA/FLDAS/NOAH01/C/GL/M/V001"), "Qs_tavg", 86400*24, 12500]
 
 	# GLDAS
-	data['ssr'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "Qs_acc", 1, 25000]
-	data['bfr'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "Qsb_acc", 1, 25000 ]
-	data['qsm'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "Qsm_acc", 1, 25000]
+	data['gldas_ssr'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "Qs_acc", 1, 25000]
+	data['gldas_bfr'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "Qsb_acc", 1, 25000 ]
+	data['gldas_qsm'] = [ee.ImageCollection('NASA/GLDAS/V021/NOAH/G025/T3H'), "Qsm_acc", 1, 25000]
 
 	#####################
 	##### SM data #######
@@ -585,6 +624,16 @@ def load_data():
 
 	data['landsat_8_b1'] = [ee.ImageCollection('LANDSAT/LC08/C01/T1_SR'), "B1" ,  0.001, 30] 
 
+	data['l8_ndwi_32d'] = [ee.ImageCollection('LANDSAT/LC08/C01/T1_32DAY_NDWI'), "NDWI", 1, 30]
+	data['l8_ndwi_annual'] = [ee.ImageCollection("LANDSAT/LC08/C01/T1_ANNUAL_NDWI"), "NDWI", 1, 30]
+
+	data['l8_ndvi_annual'] = [ee.ImageCollection("LANDSAT/LC08/C01/T1_ANNUAL_NDVI"), "NDVI", 1, 30]
+
+
+	data['l7_ndwi_32d'] = [ee.ImageCollection('LANDSAT/LC07/C01/T1_32DAY_NDWI'), "NDWI", 1, 30]
+
+
+
 	###########################
 	##### Landcover data ######
 	###########################
@@ -592,10 +641,21 @@ def load_data():
 
 	return data
 
+
+
+''' 
+#############################################################################################################
+
+Lookup tables
+
+#############################################################################################################
+'''
+
+
 def cdl_2_faunt():
 	
 	'''
-	Now: Classify crop types from CDL to the faunt (2009), schmid (2004) scheme 
+	Classify crop types from CDL to the faunt (2009), schmid (2004) scheme 
 
 	CDL classes: https://developers.google.com/earth-engine/datasets/catalog/USDA_NASS_CDL
 	Faunt kc and classes: https://water.usgs.gov/GIS/metadata/usgswrd/XML/pp1766_fmp_parameters.xml 
@@ -612,8 +672,8 @@ def cdl_2_faunt():
 	# Urban = developed high intensity(124), developed medium intensity(123)
 	2 : ["124", "123"], 
 	# Native = grassland/pasture(176), Forest(63), Shrubs(64), barren(65, 131), Clover/Wildflowers(58)
-	# Forests (141 - 143), Shrubland (152)
-	3 : ["176","63","64", "65", "131","58", "141", "142", "143", "152"], 
+	# Forests (141 - 143), Shrubland (152), Woody Wetlands (190), Herbaceous wetlands (195)
+	3 : ["176","63","64", "65", "131","58", "141", "142", "143", "152", "190", "195"], 
 	# Orchards, groves, vineyards = 
 	4 : [""],
 	# Pasture / hay = other hay / non alfalfa (37)
@@ -671,8 +731,8 @@ def cdl_2_faunt():
 	20 : [""],
 	# Cropland = Other crops (44)
 	21 : ["44"], 
-	# Irrigated row and field crops = Woody Wetlands (190), Herbaceous wetlands = 195
-	22 : ["190", "195"] 
+	# Irrigated row and field crops = Woody Wetlands (190), Herbaceous wetlands(195)
+	22 : [""] # ["190", "195"] 
 	}
 	
 	return data
