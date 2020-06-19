@@ -262,9 +262,6 @@ def process_poly(polylist):
         ndwi_im = dict2arr(landsat_dict, "NDWI")
         
         # Map values from the CDL to the FMP
-        fmpvals = []
-        cdlvals = []
-
         mapping = rs.cdl_2_faunt()    
         fmp_im = map_cdl2fmp(mapping, cdl_im)
         
