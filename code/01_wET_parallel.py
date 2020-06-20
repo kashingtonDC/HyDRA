@@ -184,10 +184,10 @@ def interp_modis_nans(modis_image):
 
     # Mask nans 
     array = np.ma.masked_invalid(modis_image)
-    
+
     # Make the outgrid 
-    xi = np.linspace(0, W, H)
-    yi = np.linspace(0, W, H)
+    xi = np.linspace(0, H, H)
+    yi = np.linspace(0, W, W)
     xx, yy = np.meshgrid(xi, yi)
 
     # xx, yy = np.meshgrid(new_W, new_H)
@@ -196,9 +196,6 @@ def interp_modis_nans(modis_image):
     newarr = array[~array.mask]
 
     new_arr = interp.griddata((x1, y1), newarr.ravel(), (xx, yy),method='linear')
-    
-    return new_arr
-
 
 
 def normalize_array(x):
