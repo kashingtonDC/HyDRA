@@ -192,6 +192,11 @@ def interp_modis_nans(modis_image):
     
     return new_arr
 
+def find_nearest_nlcd(yearint, yearlist = [2001, 2004, 2006, 2008, 2011, 2013, 2016]):
+    absolute_diff = lambda list_value : abs(list_value - yearint)
+    closest_value = min(yearlist, key=absolute_diff)
+    return closest_value
+
 def process_poly(polylist):
     '''
     main routine 
@@ -218,13 +223,10 @@ def process_poly(polylist):
         yearstart = "{}-01-01".format(str(y))
         yearend = "{}-12-31".format(str(y))
 
-        # Select the nlcd dataset
+        # Select the nlcd dataset (2001, 2004, 2006, 2008, 2011, 2014, 2016)
+        nearest_year_start = "{}-01-01".format(str(find_nearest_nlcd(y)))
         nlcd_col = ee.ImageCollection('USGS/NLCD')
-
-        # find the nearest nlcd year available 
-        nlcd = nlcd_col.filterDate(ee.Date(yearstart).advance(-1, 'years'), ee.Date(yearstart).advance(2, 'years')).first()
-        if not nlcd_col.getInfo():
-            nlcd = nlcd_col.filterDate(ee.Date(yearstart).advance(-3, 'years'), ee.Date(yearstart).advance(2, 'years')).first()
+        nlcd = nlcd_col.filterDate(ee.Date(nearest_year_start),  ee.Date(nearest_year_start).advance(1, 'years')).first()
 
         # Compile NLCD 
         nlcd_dat = ee.Image.pixelLonLat().addBands(nlcd).reduceRegion(reducer=ee.Reducer.toList(),geometry=aoi,scale=30)
@@ -313,7 +315,7 @@ def main():
     polys = rs.gen_polys(area, dx = 0.2, dy = 0.2)
     polydict = polys.getInfo()
 
-    polyfile = '../data/polycoordsdict.json'
+    polyfile = '../data/ETkc/polycoordsdict.json'
 
     # See if a split geometry json exists, if so read, if not, split 
     if not os.path.exists(polyfile):
@@ -327,7 +329,7 @@ def main():
         valid_polys = []
 
         for i in tqdm(polydict['features'][:]):
-            aoi = ee.Geometry.Polygon(i['geometry']['coordinates'])
+            aoi = ee.Geometry.Polygon(i['geometry']['coordinates']).intersection(area)
             pols = aoi.getInfo()['coordinates']
             if len(pols) == 0:
                 continue
