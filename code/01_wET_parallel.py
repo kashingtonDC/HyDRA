@@ -197,6 +197,8 @@ def interp_modis_nans(modis_image):
 
     new_arr = interp.griddata((x1, y1), newarr.ravel(), (xx, yy),method='linear')
 
+    return new_arr
+
 
 def normalize_array(x):
     '''
