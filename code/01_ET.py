@@ -262,8 +262,8 @@ def process_poly(polylist):
             kc_im = map_fmp2kc(kcdict, fmp_im)
             monthly_ims.append(kc_im)
 
-        aet = rs.calc_monthly_sum(data['modis_aet'],  yearstart,  yearend,  aoi)
-        pet = rs.calc_monthly_sum(data['modis_pet'], yearstart,  yearend, aoi)
+        aet = calc_monthly_sum(data['modis_aet'],  yearstart,  yearend,  aoi)
+        pet = calc_monthly_sum(data['modis_pet'], yearstart,  yearend, aoi)
 
         aetims =  get_monthly_et(data['modis_aet'],  yearstart,  yearend, aoi = aoi) 
         petims = get_monthly_et(data['modis_pet'],  yearstart,  yearend, aoi = aoi)
@@ -312,13 +312,6 @@ def main():
     area = rs.gdf_to_ee_poly(gdf.simplify(0.01))
     polys = rs.gen_polys(area, dx = 0.2, dy = 0.2)
     polydict = polys.getInfo()
-
-    strstart = '2001-01-01'
-    strend = '2019-12-31'
-
-    startdate = datetime.datetime.strptime(strstart, "%Y-%m-%d")
-    enddate = datetime.datetime.strptime(strend, "%Y-%m-%d")
-    years = range(2001, 2020)
 
     polyfile = '../data/polycoordsdict.json'
 
