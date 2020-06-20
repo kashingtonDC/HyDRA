@@ -98,7 +98,7 @@ def get_monthly_et(dataset, start, end, aoi):
         t2 = t1.advance(1, 'month');
 
         im = ee.Image(ImageCollection.select(var).filterDate(t1, t2).sum().set('system:time_start', t1.millis()))
-        modis_dat = im.pixelLonLat().addBands(im).reduceRegion(reducer=ee.Reducer.toList(),
+        modis_dat = im.pixelLonLat().addBands(im).multiply(scaling_factor).reduceRegion(reducer=ee.Reducer.toList(),
                                                                geometry=aoi,
                                                                scale=1000, crs ='EPSG:4326')
 
@@ -128,9 +128,6 @@ def calc_monthly_sum(dataset, startdate, enddate, area):
     sums = []
     seq = ee.List.sequence(0, len(dt_idx)-1)
     num_steps = seq.getInfo()
-
-    # tqdm.write("processing:")
-    # tqdm.write("{}".format(ImageCollection.first().getInfo()['id']))
 
     for i in num_steps:
 
@@ -170,12 +167,12 @@ def resample_1km_30m(im_1km,im_30m):
     
     return new_arr
 
+
 def interp_modis_nans(modis_image):
     '''
     interpolates nans in modis imagery. Doesn't work if a whole row/col at edge of image is all nans 
     '''
 
-    # Get array dims
     W, H = modis_image.shape[:2]
 
     # Mask nans 
@@ -192,16 +189,8 @@ def interp_modis_nans(modis_image):
     newarr = array[~array.mask]
 
     new_arr = interp.griddata((x1, y1), newarr.ravel(), (xx, yy),method='linear')
-
+    
     return new_arr
-
-
-def normalize_array(x):
-    '''
-    Force everything in an array between 0 and 1
-    '''
-    return (x-np.nanmin(x))/(np.nanmax(x)-np.nanmin(x))
-
 
 def process_poly(polylist):
     '''
@@ -209,57 +198,60 @@ def process_poly(polylist):
     '''
     polygon, polyidx = polylist[0], polylist[1]
     tqdm.write("Processing Polygon {}".format(polygon))
-
+    
     # Setup write dir 
-    outdir = os.path.join(os.getcwd(), "../data/wET")
+    outdir = os.path.join(os.getcwd(), "../data/ETkc")
     if not os.path.exists(outdir):
         os.mkdir(outdir)
 
-    # load data 
+    # Load data
     kc = pd.read_csv('../data/fmp_kc_faunt.csv')
     data = rs.load_data()
-    pol = ee.Geometry.Polygon(polygon)
-    aoi = pol.bounds()
+    aoi = ee.Geometry.Polygon(polygon)
 
     # Define timerange 
     years = range(2001, 2020)
     yearlydat = []
 
     for y in tqdm(years[:]):
-        
+            
         yearstart = "{}-01-01".format(str(y))
         yearend = "{}-12-31".format(str(y))
+
+        # Select the nlcd dataset
+        nlcd_col = ee.ImageCollection('USGS/NLCD')
+
+        # find the nearest nlcd year available 
+        nlcd = nlcd_col.filterDate(ee.Date(yearstart).advance(-1, 'years'), ee.Date(yearstart).advance(2, 'years')).first()
+        if not nlcd_col.getInfo():
+            nlcd = nlcd_col.filterDate(ee.Date(yearstart).advance(-3, 'years'), ee.Date(yearstart).advance(2, 'years')).first()
+
+        # Compile NLCD 
+        nlcd_dat = ee.Image.pixelLonLat().addBands(nlcd).reduceRegion(reducer=ee.Reducer.toList(),geometry=aoi,scale=30)
+        nlcd_dict = nlcd_dat.getInfo()
         
+        # get PET classes (11-water, 81-crops, 82-pasture), and make everything else AET 
+        nlcd_im = dict2arr(nlcd_dict, 'landcover')
+        petmask = np.isin(nlcd_im, [11,81,82], invert = False).reshape(nlcd_im.shape).astype(int)
+        aetmask = np.isin(nlcd_im, [11,81,82], invert = True).reshape(nlcd_im.shape).astype(int)
+
         # Select the correct or most recent CDL
         if y < 2008:
             cdl = ee.Image("USDA/NASS/CDL/2008")
         else:
             cdl = ee.Image("USDA/NASS/CDL/{}".format(str(y)))
-        
-        if y < 2013: 
-    #         landsat = ee.ImageCollection("LANDSAT/LE07/C01/T1_ANNUAL_NDWI").filterDate(yearstart, yearend).sum()
-            landsat = ee.ImageCollection("LANDSAT/LE07/C01/T1_32DAY_NDWI").filterDate(yearstart, yearend).mean()
-
-        if y >= 2013: 
-    #         landsat = ee.ImageCollection("LANDSAT/LC08/C01/T1_ANNUAL_NDWI").filterDate(yearstart, yearend).sum()
-            landsat = ee.ImageCollection("LANDSAT/LC08/C01/T1_32DAY_NDWI").filterDate(yearstart, yearend).mean()
-
+            
         # Compile CDL
         cdl_dat = ee.Image.pixelLonLat().addBands(cdl).reduceRegion(reducer=ee.Reducer.toList(),geometry=aoi,scale=30)
         cdl_dict = cdl_dat.getInfo()
-        
-        # Compile landsat NDWI 
-        landsat_dat = ee.Image.pixelLonLat().addBands(landsat).reduceRegion(reducer=ee.Reducer.toList(),geometry=aoi,scale=30)
-        landsat_dict = landsat_dat.getInfo()
-        
+
         # Make the ims 
         cdl_im = dict2arr(cdl_dict, 'cropland')
-        ndwi_im = dict2arr(landsat_dict, "NDWI")
-        
+
         # Map values from the CDL to the FMP
         mapping = rs.cdl_2_faunt()    
         fmp_im = map_cdl2fmp(mapping, cdl_im)
-        
+
         # Map values from the FMP to kc (Schmid, 2004)
         monthly_ims = []
 
@@ -270,37 +262,36 @@ def process_poly(polylist):
             kc_im = map_fmp2kc(kcdict, fmp_im)
             monthly_ims.append(kc_im)
 
+        aet = rs.calc_monthly_sum(data['modis_aet'],  yearstart,  yearend,  aoi)
+        pet = rs.calc_monthly_sum(data['modis_pet'], yearstart,  yearend, aoi)
 
-        aet = calc_monthly_sum(data['modis_aet'],  yearstart,  yearend,  aoi)
-        pet = calc_monthly_sum(data['modis_pet'], yearstart,  yearend, aoi)
+        aetims =  get_monthly_et(data['modis_aet'],  yearstart,  yearend, aoi = aoi) 
+        petims = get_monthly_et(data['modis_pet'],  yearstart,  yearend, aoi = aoi)
 
-        # mod_aet = get_monthly_et(data['modis_aet'],  yearstart,  yearend, aoi = aoi)
-        # mod_pet = get_monthly_et(data['modis_pet'],  yearstart,  yearend, aoi = aoi)
-
-        aetims =  get_monthly_et(data['modis_aet'],  yearstart,  yearend, aoi = aoi) # [interp_modis_nans(x) for x in mod_aet]
-        petims = get_monthly_et(data['modis_pet'],  yearstart,  yearend, aoi = aoi) # [interp_modis_nans(x) for x in mod_pet]
-
-        # Crop coefficient method - take the mean kc per image
+        # Record mean kc per image
         kc_means = np.array([np.mean(x) for x in monthly_ims])
+        
+        # Apply the kc method, convert mm to km = 1e-6; m^2 to km^2 = 1e-6; 900 m^2 / cell 
+        sums = []
+        for aetim, petim ,kcim in zip(aetims, petims, monthly_ims):
+            tpet = np.nansum(resample_1km_30m(interp_modis_nans(petim), kcim)* kcim *petmask)* 1e-12 * 900
+            taet = np.nansum(resample_1km_30m(interp_modis_nans(aetim), kcim)* aetmask)*1e-12 * 900
+            sums.append(np.sum([tpet, taet]))
 
-        # Compute wET like  $ [( (1- ndwi) * kc *aet ) + (ndwi * pet *kc)]$
-        wETs = []
-        for a,b,c in zip(petims, aetims,monthly_ims):
-            pet_rs = resample_1km_30m(a, c)
-            aet_rs = resample_1km_30m(b, c)
-            wET =  (aet_rs* c * (1-normalize_array(ndwi_im))) + (pet_rs * normalize_array(ndwi_im)*c) 
-            wETs.append(wET)
+        petsum = [np.nansum(x)*1e-9 * 900 for x in petims]
+        aetsum = [np.nansum(x)*1e-9 * 900 for x in aetims]
 
-        wET_means = np.array([np.nanmean(x) for x in wETs])
-        wETdf = pd.DataFrame([ wET_means*0.1]).T.set_index(pet.index) # scaling factor of 0.1
-        wETkm3 = wETdf* wETs[0].shape[0]*wETs[0].shape[1]*900 * 1e-12 # mm to km = 1e-6; m^2 to km^2 = 1e-6; 900 m^2 / cell 
-        wETkm3.columns = ['wET']
+        ETdf = pd.DataFrame([sums]).T.set_index(pet.index) 
+        ETdf.columns = ['ETkc']
 
-        wETkm3['pet'] = pet
-        wETkm3['aet'] = aet
-        wETkm3['kc'] = kc_means
+        ETdf['petsum'] = pet
+        ETdf['aetsum'] = aet
+        ETdf['aetimsum'] = aetsum
+        ETdf['petimsum'] = petsum
+        ETdf['kc_mean'] = kc_means
+        ETdf['irr_frac'] = petmask.sum()/(petmask.sum() + aetmask.sum())
 
-        yearlydat.append(wETkm3)
+        yearlydat.append(ETdf)
 
     # Write out
     df_out = pd.concat(yearlydat)
@@ -315,9 +306,22 @@ def main():
     # Read files, make polygons
     kc = pd.read_csv('../data/fmp_kc_faunt.csv')
     gdf = gp.read_file("../shape/cv.shp")
+    data = rs.load_data()
+
+    # Split cv into polygons
+    area = rs.gdf_to_ee_poly(gdf.simplify(0.01))
+    polys = rs.gen_polys(area, dx = 0.2, dy = 0.2)
+    polydict = polys.getInfo()
+
+    strstart = '2001-01-01'
+    strend = '2019-12-31'
+
+    startdate = datetime.datetime.strptime(strstart, "%Y-%m-%d")
+    enddate = datetime.datetime.strptime(strend, "%Y-%m-%d")
+    years = range(2001, 2020)
+
     polyfile = '../data/polycoordsdict.json'
 
-    
     # See if a split geometry json exists, if so read, if not, split 
     if not os.path.exists(polyfile):
         # Split cv into polygons
@@ -356,6 +360,10 @@ def main():
     # Main routine 
     print("BEGIN MAIN ROUTINE ===================================================== ")
 
+    # Run a signle file to test
+    # for k,v in polycoords.items():
+    #     process_poly((v,k))
+    
     # Parallelize 
     pool = mp.Pool(mp.cpu_count())
     polylist = [[poly,polyidx] for polyidx, poly in polycoords.items()]
@@ -363,3 +371,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
