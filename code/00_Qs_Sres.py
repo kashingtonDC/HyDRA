@@ -279,7 +279,7 @@ def res_storage(shp, outfn):
 
 	for i in tqdm(within_gdf.ID):
 		print("processing " + i )
-		url = "https://cdec.water.ca.gov/dynamicapp/req/CSVDataServlet?Stations={}&SensorNums=15&dur_code=M&Start=2001-01-01&End=2018-12-01".format(i)
+		url = "https://cdec.water.ca.gov/dynamicapp/req/CSVDataServlet?Stations={}&SensorNums=15&dur_code=M&Start=2001-01-01&End=2020-01-01".format(i)
 		urlData = requests.get(url).content
 		df = pd.read_csv(io.StringIO(urlData.decode('utf-8')))
 		
