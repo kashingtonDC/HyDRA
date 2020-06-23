@@ -279,7 +279,7 @@ def res_storage(shp, outfn):
 
 	for i in tqdm(within_gdf.ID):
 		print("processing " + i )
-		url = "https://cdec.water.ca.gov/dynamicapp/req/CSVDataServlet?Stations={}&SensorNums=15&dur_code=M&Start=2001-01-01&End=2020-01-01".format(i)
+		url = "https://cdec.water.ca.gov/dynamicapp/req/CSVDataServlet?Stations={}&SensorNums=15&dur_code=M&Start=1997-01-01&End=2020-01-01".format(i)
 		urlData = requests.get(url).content
 		df = pd.read_csv(io.StringIO(urlData.decode('utf-8')))
 		
@@ -294,7 +294,7 @@ def res_storage(shp, outfn):
 
 	storage_sum = np.nansum(np.column_stack(storage), axis = 1) * 1.23348e-6 # acre ft to km^3
 	Sres = pd.DataFrame(zip(dt_idx,storage_sum), columns = ['date',"Sres"])
-
+	Sres.set_index('date', inplace = True)
 	Sres.to_csv(outfn)
 
 	print("Mean reservoir storage = {} km^3".format(np.mean(Sres)))
