@@ -139,6 +139,26 @@ def gen_polys(geometry, dx=0.5, dy=0.5):
     return ee.FeatureCollection(ee.List(polys)).filterBounds(geometry)
   
 
+def draw_poly(gdf, mpl_map, facecolor = "red",  alpha = 0.3, edgecolor = 'black', lw = 1, fill = True):
+    
+    '''
+    Turns a geopandas gdf into matplotlib polygon patches for friendly plotting with basemap. 
+    
+    '''    
+
+    for index, row in gdf.iterrows():
+        lats = []
+        lons = []
+        for pt in list(row['geometry'].exterior.coords): 
+            lats.append(pt[1])
+            lons.append(pt[0])
+
+        x, y = m( lons, lats )
+        xy = zip(x,y)
+        poly = Polygon(list(xy), fc=facecolor, alpha=alpha, ec = edgecolor ,lw = lw, fill = fill)
+        plt.gca().add_patch(poly)
+
+
 ''' 
 #############################################################################################################
 
@@ -235,6 +255,9 @@ def calc_monthly_mean(dataset, startdate, enddate, area):
 	return df
 
 def get_grace(dataset, startdate, enddate, area):
+	'''
+	Get Grace data from EE. Similar to above 
+	'''
 
 	ImageCollection = dataset[0]
 	var = dataset[1]
@@ -243,7 +266,7 @@ def get_grace(dataset, startdate, enddate, area):
 	dt_idx = pd.date_range(startdate,enddate, freq='M')
 	
 	sums = []
-	seq = ee.List.sequence(0, len(dt_idx))
+	seq = ee.List.sequence(0, len(dt_idx)-1)
 	
 	print("processing:")
 	print("{}".format(ImageCollection.first().getInfo()['id']))
@@ -270,7 +293,11 @@ def get_grace(dataset, startdate, enddate, area):
 		except:
 			sums.append(np.nan) # If there is no grace data that month, append a np.nan 
 
-	return sums
+	sumdf = pd.DataFrame(np.array(sums), dt_idx)
+	sumdf.columns = [var]
+	df = sumdf.astype(float)
+
+	return df
 
 def get_ims(dataset, startdate,enddate, area, return_dates = False, table = False, monthly_mean = False,  monthly_sum = False):
     
@@ -741,7 +768,7 @@ def cdl_2_faunt():
 
 def nlcd_nums2classes(): 
 	'''
-	Numeric lookup table mapping numeric classes to nlcd labels 
+	lookup table mapping numeric classes to nlcd labels 
 	'''
 	data = {11: 'Open Water',
 			12: 'Perennial Ice/Snow',
