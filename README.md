@@ -1,20 +1,32 @@
 # Hybrid Data Remote Sensing Assimilation (HyDRA) System 
 
+Author: Aakash Ahamed (aahamed@stanford.edu), Stanford Univ Dept of Geophysics
+Date: 7/2020
+Description: This repository contains the code and data to perform monthly water balance calculations using remote sensing and in situ data for the Central Valley (CV) and Central Valley Watershed (CVWS) of California. Files describing the geographic domain are stored in the `shape` directory. Scripts to download and process data, and generate figures and results are stored in the `code` directory. Instructions to install the required software dependencies are in the `build` directory. Figures and images are stored in the `images` directory. Below is a list of URLS containing additional datasets for the CV and CVWS. 
+
+![](/images/Figure1.png)
+Study domain
+
 ![](/images/cvws_et.gif)
+SSEBop ET in the CVWS
 
-# Data Used: 
+![](/images/Figure2.png)
+Changes in Groundwater Storage
 
-## Satellite Data
-Accessed mostly through google earth engine. (https://developers.google.com/earth-engine/datasets/)
 
-## SSEBOP ET data 
+# More information about data used or queried in this repository : 
+
+## Remote Sensing and Satellite Data - Various sources
+[Google Earth Engine](https://developers.google.com/earth-engine/datasets/)
+
+## SSEBOP ET data - USGS 
 [SSEBOP](https://cida.usgs.gov/thredds/catalog.html?dataset=cida.usgs.gov/ssebopeta/monthly)
 
 [SSEBOP bbox url](https://cida.usgs.gov/thredds/ncss/ssebopeta/monthly/dataset.html)
 
 [SSEBOP.nc](https://cida.usgs.gov/thredds/ncss/ssebopeta/monthly?var=et&north=42.003728&west=-123.217338&east=-117.959444&south=34.459646&horizStride=1&time_start=2000-01-01T00%3A00%3A00Z&time_end=2019-10-01T00%3A00%3A00Z&timeStride=1&addLatLon=true)
 
-## Watershed Data - National Hydrographic Dataset 
+## Watershed Data - National Hydrographic Dataset - USGS
 [https://www.usgs.gov/core-science-systems/ngp/national-hydrography/nhdplus-high-resolution](https://www.usgs.gov/core-science-systems/ngp/national-hydrography/nhdplus-high-resolution)
 ```
 mkdir nhd
@@ -28,7 +40,7 @@ curl -o 1804.zip https://prd-tnm.s3.amazonaws.com/StagedProducts/Hydrography/NHD
 
 ```
 
-## C2VSIM gw flow model data
+## C2VSIM flow model - DWR
 
 click link to download:
 
@@ -46,27 +58,8 @@ rm -rf Shapefiles Shapefiles.zip
 
 ```
 
-## Detailed Analysis Units - DWR
-[https://github.com/CSTARS/dwr-dau](https://github.com/CSTARS/dwr-dau)
-
-## Applied water, ET - CALSIM DWR
-[https://data.ca.gov/dataset/cal-simetaw-unit-values](https://data.ca.gov/dataset/cal-simetaw-unit-values)
-
 ## Crop Coefficients - USGS
 [https://water.usgs.gov/GIS/dsdl/pp1766_fmp_parameters.zip](https://water.usgs.gov/GIS/dsdl/pp1766_fmp_parameters.zip)
-
-## Crop Areas - DWR
-[https://data.cnra.ca.gov/dataset/crop-mapping-2014](https://data.cnra.ca.gov/dataset/crop-mapping-2014)
-[https://opendata.arcgis.com/datasets/f4f00986f1e141cc99cff221391084de_0.zip](https://opendata.arcgis.com/datasets/f4f00986f1e141cc99cff221391084de_0.zip)
-
-## Reservoirs Data - California Data Exchange Center
-[http://cdec.water.ca.gov/misc/monthlyStations.html](http://cdec.water.ca.gov/misc/monthlyStations.html) 
-
-## Aqueducts - DWR 
-[https://data.ca.gov/dataset/canals-and-aqueducts-local](https://data.ca.gov/dataset/canals-and-aqueducts-local)
-
-## SGMA GW Basins 
-[basin priority data](https://data.cnra.ca.gov/dataset/sgma-basin-prioritization-2018/resource/7bfe794b-b64e-46ee-9d7f-2ca9593cfee2)
 
 ## SF Bay Outflow - DWR
 [dayflow](https://water.ca.gov/Programs/Environmental-Services/Compliance-Monitoring-And-Assessment/Dayflow-Data)
@@ -76,6 +69,30 @@ rm -rf Shapefiles Shapefiles.zip
 
 ## CVHM Texture model - USGS
 [cvhm texture data](https://ca.water.usgs.gov/projects/central-valley/well-log-texture.xls)
+
+## Reservoir Data - California Data Exchange Center
+[http://cdec.water.ca.gov/misc/monthlyStations.html](http://cdec.water.ca.gov/misc/monthlyStations.html) 
+
+
+
+## Detailed Analysis Units - DWR
+[https://github.com/CSTARS/dwr-dau](https://github.com/CSTARS/dwr-dau)
+
+## Applied water, ET - CALSIM DWR
+[https://data.ca.gov/dataset/cal-simetaw-unit-values](https://data.ca.gov/dataset/cal-simetaw-unit-values)
+
+
+
+## Crop Areas - DWR
+[https://data.cnra.ca.gov/dataset/crop-mapping-2014](https://data.cnra.ca.gov/dataset/crop-mapping-2014)
+[https://opendata.arcgis.com/datasets/f4f00986f1e141cc99cff221391084de_0.zip](https://opendata.arcgis.com/datasets/f4f00986f1e141cc99cff221391084de_0.zip)
+
+
+## Aqueducts - DWR 
+[https://data.ca.gov/dataset/canals-and-aqueducts-local](https://data.ca.gov/dataset/canals-and-aqueducts-local)
+
+## SGMA GW Basins 
+[basin priority data](https://data.cnra.ca.gov/dataset/sgma-basin-prioritization-2018/resource/7bfe794b-b64e-46ee-9d7f-2ca9593cfee2)
 
 ## CVHM
 [faunt, 2009 model files](https://water.usgs.gov/GIS/dsdl/gwmodels/PP2009-1766/model.zip)
@@ -92,6 +109,5 @@ rm -rf Shapefiles Shapefiles.zip
 curl -o swp.json https://services7.arcgis.com/x74yAepfzbQsthyi/arcgis/rest/services/NHD_SWP_Aqueduct/FeatureServer/0?f=pjson 
 ogr2ogr -f "ESRI Shapefile" SWP_Canals.shp swp.json
 ```
-
 ## SW deliveries - USBR
 [sw deliveries](https://www.usbr.gov/mp/cvo/deliv.html)
