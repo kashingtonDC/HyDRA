@@ -1,16 +1,16 @@
 # Hybrid Data Remote Sensing Assimilation (HyDRA) System 
 
-Author: Aakash Ahamed (aahamed@stanford.edu), Stanford Univ Dept of Geophysics
-Date: 7/2020
-Description: This repository contains the code and data to perform monthly water balance calculations using remote sensing and in situ data for the Central Valley (CV) and Central Valley Watershed (CVWS) of California. Files describing the geographic domain are stored in the `shape` directory. Scripts to download and process data, and generate figures and results are stored in the `code` directory. Instructions to install the required software dependencies are in the `build` directory. Figures and images are stored in the `images` directory. Below is a list of URLS containing additional datasets for the CV and CVWS. 
+* Author: Aakash Ahamed (aahamed@stanford.edu), Stanford Univ Dept of Geophysics 
+* Date: 7/2020
+* Description: This repository contains the code and data to perform monthly water balance calculations using remote sensing and in situ data for the Central Valley (CV) and Central Valley Watershed (CVWS) of California. Files describing the geographic domain are stored in the `shape` directory. Scripts to download and process data, and generate figures and results are stored in the `code` directory. Instructions to install the required software dependencies are in the `build` directory. Figures and images are stored in the `images` directory. Below is a list of URLS containing additional datasets for the CV and CVWS. 
 
-![](/images/Figure1.png)
+<img src="/images/Figure1.png" width="48"> <br>
 Study domain
 
-![](/images/cvws_et.gif)
+![](/images/cvws_et.gif) <br> 
 SSEBop ET in the CVWS
 
-![](/images/Figure2.png)
+<img src="/images/Figure2.png" width="48"> <br>
 Changes in Groundwater Storage
 
 
@@ -74,14 +74,14 @@ rm -rf Shapefiles Shapefiles.zip
 [http://cdec.water.ca.gov/misc/monthlyStations.html](http://cdec.water.ca.gov/misc/monthlyStations.html) 
 
 
+# Additional data: 
+
 
 ## Detailed Analysis Units - DWR
 [https://github.com/CSTARS/dwr-dau](https://github.com/CSTARS/dwr-dau)
 
 ## Applied water, ET - CALSIM DWR
 [https://data.ca.gov/dataset/cal-simetaw-unit-values](https://data.ca.gov/dataset/cal-simetaw-unit-values)
-
-
 
 ## Crop Areas - DWR
 [https://data.cnra.ca.gov/dataset/crop-mapping-2014](https://data.cnra.ca.gov/dataset/crop-mapping-2014)
