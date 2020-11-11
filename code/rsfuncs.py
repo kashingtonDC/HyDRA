@@ -8,24 +8,35 @@ Codes to process geospatial data in earth engine and python
 
 import os
 import ee
-import datetime
 import time
 import tqdm
+import fiona
+import datetime
 
-import geopandas as gp
 import numpy as np
 import pandas as pd
+import xarray as xr
+import rasterio as rio
+import geopandas as gp
 
-from dateutil.relativedelta import relativedelta
+from osgeo import gdal
+from osgeo import osr
+from datetime import timedelta
+from rasterio import features, mask
 from shapely.ops import unary_union
+from climata.usgs import DailyValueIO
 from pandas.tseries.offsets import MonthEnd
+from dateutil.relativedelta import relativedelta
+from dateutil.relativedelta import relativedelta
+from pandas.tseries.offsets import MonthEnd
+
 from tqdm import tqdm_notebook as tqdm
 
 
 ''' 
 #############################################################################################################
 
-Helpers
+Helpers for working with dataframes, times, dicts etc
 
 #############################################################################################################
 '''
@@ -104,60 +115,110 @@ def get_area(gdf, fast = True):
 	return area
 
 def gen_polys(geometry, dx=0.5, dy=0.5):
-    
-    '''
-    Input: ee.Geometry
-    Return: ee.ImaceCollection of polygons 
-    Use: Subpolys used to submit full res (30m landsat; 10m sentinel) resolution for large areas 
-    '''
-    
-    bounds = ee.Geometry(geometry).bounds()
-    coords = ee.List(bounds.coordinates().get(0))
-    ll = ee.List(coords.get(0))
-    ur = ee.List(coords.get(2))
-    xmin = ll.get(0)
-    xmax = ur.get(0)
-    ymin = ll.get(1)
-    ymax = ur.get(1)
+	
+	'''
+	Input: ee.Geometry
+	Return: ee.ImaceCollection of polygons 
+	Use: Subpolys used to submit full res (30m landsat; 10m sentinel) resolution for large areas 
+	'''
+	
+	bounds = ee.Geometry(geometry).bounds()
+	coords = ee.List(bounds.coordinates().get(0))
+	ll = ee.List(coords.get(0))
+	ur = ee.List(coords.get(2))
+	xmin = ll.get(0)
+	xmax = ur.get(0)
+	ymin = ll.get(1)
+	ymax = ur.get(1)
 
-    xx = ee.List.sequence(xmin, xmax, dx)
-    yy = ee.List.sequence(ymin, ymax, dy)
-    
-    polys = []
+	xx = ee.List.sequence(xmin, xmax, dx)
+	yy = ee.List.sequence(ymin, ymax, dy)
+	
+	polys = []
 
-    for x in tqdm(xx.getInfo()):
-        for y in yy.getInfo():
-            x1 = ee.Number(x).subtract(ee.Number(dx).multiply(0.5))
-            x2 = ee.Number(x).add(ee.Number(dx).multiply(0.5))
-            y1 = ee.Number(y).subtract(ee.Number(dy).multiply(0.5))
-            y2 = ee.Number(y).add(ee.Number(dy).multiply(0.5))
-            geomcoords = ee.List([x1, y1, x2, y2]);
-            rect = ee.Algorithms.GeometryConstructors.Rectangle(geomcoords);
-            polys.append(ee.Feature(rect))
+	for x in tqdm(xx.getInfo()):
+		for y in yy.getInfo():
+			x1 = ee.Number(x).subtract(ee.Number(dx).multiply(0.5))
+			x2 = ee.Number(x).add(ee.Number(dx).multiply(0.5))
+			y1 = ee.Number(y).subtract(ee.Number(dy).multiply(0.5))
+			y2 = ee.Number(y).add(ee.Number(dy).multiply(0.5))
+			geomcoords = ee.List([x1, y1, x2, y2]);
+			rect = ee.Algorithms.GeometryConstructors.Rectangle(geomcoords);
+			polys.append(ee.Feature(rect))
 
 
-    return ee.FeatureCollection(ee.List(polys)).filterBounds(geometry)
+	return ee.FeatureCollection(ee.List(polys)).filterBounds(geometry)
   
 
+
+''' 
+#############################################################################################################
+
+Matplotlib Plotting for Vectors / Shapefiles
+
+#############################################################################################################
+'''
+
+
 def draw_poly(gdf, mpl_map, facecolor = "red",  alpha = 0.3, edgecolor = 'black', lw = 1, fill = True):
-    
-    '''
-    Turns a geopandas gdf into matplotlib polygon patches for friendly plotting with basemap. 
-    
-    '''    
+	'''
+	Turns a geopandas gdf into matplotlib polygon patches for friendly plotting with basemap. 
+	
+	'''    
 
-    for index, row in gdf.iterrows():
-        lats = []
-        lons = []
-        for pt in list(row['geometry'].exterior.coords): 
-            lats.append(pt[1])
-            lons.append(pt[0])
+	for index, row in gdf.iterrows():
+		lats = []
+		lons = []
+		for pt in list(row['geometry'].exterior.coords): 
+			lats.append(pt[1])
+			lons.append(pt[0])
 
-        x, y = m( lons, lats )
-        xy = zip(x,y)
-        poly = Polygon(list(xy), fc=facecolor, alpha=alpha, ec = edgecolor ,lw = lw, fill = fill)
-        plt.gca().add_patch(poly)
+		x, y = m( lons, lats )
+		xy = zip(x,y)
+		poly = Polygon(list(xy), fc=facecolor, alpha=alpha, ec = edgecolor ,lw = lw, fill = fill)
+		plt.gca().add_patch(poly)
 
+	return
+
+def draw_polys(gdf, mpl_map, facecolor = "red",  alpha = 0.3, edgecolor = 'black', lw = 1, fill = True, zorder = 3):
+	'''
+	Turns a geopandas gdf of multipolygons into matplotlib polygon patches for friendly plotting with basemap. 
+	'''
+	
+	for index, row in gdf.iterrows():
+		lats = []
+		lons = []
+		for pt in list(row['geometry'].exterior.coords): 
+			lats.append(pt[1])
+			lons.append(pt[0])
+
+		x, y = m( lons, lats )
+		xy = zip(x,y)
+		poly = Polygon(list(xy), fc=facecolor, alpha=alpha, ec = edgecolor ,lw = lw, fill = fill, zorder = zorder)
+		plt.gca().add_patch(poly)
+
+	return
+
+
+def draw_points(gdf, mpl_map, sizecol = None, color = 'red', alpha = 0.7, edgecolor = None, fill = True, zorder = 4):
+	'''
+	Turns a geopandas gdf of points into matplotlib lat/lon objects for friendly plotting with basemap. 
+	'''
+	lats = []
+	lons = []
+	for index, row in gdf.iterrows():
+		for pt in list(row['geometry'].coords): 
+			lats.append(pt[1])
+			lons.append(pt[0])
+	
+	if sizecol is None:
+		sizecol = 50
+	else:
+		sizecol = sizecol.values
+	
+	mpl_map.scatter(lons, lats, latlon=True, s = sizecol, alpha=alpha, c = color, edgecolor = edgecolor, zorder = zorder)
+
+	return
 
 ''' 
 #############################################################################################################
@@ -208,7 +269,7 @@ def calc_monthly_sum(dataset, startdate, enddate, area):
 		total = sumdict.getInfo()[var]
 		sums.append(total)
 		
-	sumdf = pd.DataFrame(np.array(sums), dt_idx)
+	sumdf = pd.DataFrame(np.array(sums), dt_idx + MonthEnd(0))
 	sumdf.columns = [var]
 	df = sumdf.astype(float)
 		
@@ -248,7 +309,7 @@ def calc_monthly_mean(dataset, startdate, enddate, area):
 		total = sumdict.getInfo()[var]
 		sums.append(total)
 		
-	sumdf = pd.DataFrame(np.array(sums), dt_idx)
+	sumdf = pd.DataFrame(np.array(sums), dt_idx + MonthEnd(0))
 	sumdf.columns = [var]
 	df = sumdf.astype(float)
 		
@@ -300,86 +361,91 @@ def get_grace(dataset, startdate, enddate, area):
 	return df
 
 def get_ims(dataset, startdate,enddate, area, return_dates = False, table = False, monthly_mean = False,  monthly_sum = False):
-    
-    '''
-    Returns gridded images for EE datasets 
-    '''
+	
+	'''
+	Returns gridded images for EE datasets 
+	'''
 
-    if monthly_mean:
-        if monthly_sum:
-            raise ValueError("cannot perform mean and sum reduction at the same time")              
+	if monthly_mean:
+		if monthly_sum:
+			raise ValueError("cannot perform mean and sum reduction at the same time")              
 
-    ImageCollection = dataset[0]
-    var = dataset[1]
-    scaling_factor = dataset[2]
-    native_res = dataset[3]
+	ImageCollection = dataset[0]
+	var = dataset[1]
+	scaling_factor = dataset[2]
+	native_res = dataset[3]
 
-    dt_idx = pd.date_range(startdate,enddate, freq='MS')
-    ims = []
-    seq = ee.List.sequence(0, len(dt_idx)-1)
-    num_steps = seq.getInfo()
+	dt_idx = pd.date_range(startdate,enddate, freq='MS')
+	ims = []
+	seq = ee.List.sequence(0, len(dt_idx)-1)
+	num_steps = seq.getInfo()
 
-    # TODO: Make this one loop ?
+	# TODO: Make this one loop ?
 
-    print("processing:")
-    print("{}".format(ImageCollection.first().getInfo()['id']))
+	print("processing:")
+	print("{}".format(ImageCollection.first().getInfo()['id']))
 
-    for i in tqdm(num_steps):
+	for i in tqdm(num_steps):
 
-        start = ee.Date(startdate).advance(i, 'month')
-        end = start.advance(1, 'month');
+		start = ee.Date(startdate).advance(i, 'month')
+		end = start.advance(1, 'month');
 
-        if monthly_mean:
-            im1 = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).mean().set('system:time_start', end.millis())
-            im = ee.ImageCollection(im1)
-        elif monthly_sum:
-            im1 = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).sum().set('system:time_start', end.millis())
-            im = ee.ImageCollection(im1)
-        else:
-            im = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).set('system:time_start', end.millis())
-        
-        result = im.getRegion(area,native_res,"epsg:4326").getInfo()
-        ims.append(result)
+		if monthly_mean:
+			im1 = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).mean().set('system:time_start', end.millis())
+			im = ee.ImageCollection(im1)
+		elif monthly_sum:
+			im1 = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).sum().set('system:time_start', end.millis())
+			im = ee.ImageCollection(im1)
+		else:
+			im = ee.ImageCollection(ImageCollection).select(var).filterDate(start, end).set('system:time_start', end.millis())
+		
+		# This try / catch is probably not great, but needs to be done for e.g. grace which is missing random months 
+		try:
+			result = im.getRegion(area,native_res,"epsg:4326").getInfo()
+			ims.append(result)
+		except:
+			continue
+		
 
-    results = []
-    dates = []
+	results = []
+	dates = []
 
-    print("postprocesing")
+	print("postprocesing")
 
-    for im in tqdm(ims):
-        header, data = im[0], im[1:]
+	for im in tqdm(ims):
+		header, data = im[0], im[1:]
 
-        df = pd.DataFrame(np.column_stack(data).T, columns = header)
-        df.latitude = pd.to_numeric(df.latitude)
-        df.longitude = pd.to_numeric(df.longitude)
-        df[var] = pd.to_numeric(df[var])
+		df = pd.DataFrame(np.column_stack(data).T, columns = header)
+		df.latitude = pd.to_numeric(df.latitude)
+		df.longitude = pd.to_numeric(df.longitude)
+		df[var] = pd.to_numeric(df[var])
 
-        if table:
-            results.append(df)
-            continue
+		if table:
+			results.append(df)
+			continue
 
-        images = []
+		images = []
 
-        for idx,i in enumerate(df.id.unique()):
+		for idx,i in enumerate(df.id.unique()):
 
-            t1 = df[df.id==i]
-            arr = array_from_df(t1,var)
-            arr[arr == 0] = np.nan
-            images.append(arr*scaling_factor)# This is the only good place to apply the scaling factor. 
+			t1 = df[df.id==i]
+			arr = array_from_df(t1,var)
+			arr[arr == 0] = np.nan
+			images.append(arr*scaling_factor)# This is the only good place to apply the scaling factor. 
 
-            if return_dates:
-                date = df.time.iloc[idx]
-                dates.append(datetime.datetime.fromtimestamp(date/1000.0))
+			if return_dates:
+				date = df.time.iloc[idx]
+				dates.append(datetime.datetime.fromtimestamp(date/1000.0))
 
-        results.append(images) 
+		results.append(images) 
 
-    print("====COMPLETE=====")
+	print("====COMPLETE=====")
 
-    # Unpack the list of results 
-    if return_dates:
-        return [ [item for sublist in results for item in sublist], dates]
-    else:   
-        return [item for sublist in results for item in sublist] 
+	# Unpack the list of results 
+	if return_dates:
+		return [ [item for sublist in results for item in sublist], dates]
+	else:   
+		return [item for sublist in results for item in sublist] 
 
 
 
@@ -490,32 +556,181 @@ def freq_hist(eeImage, area, scale, var_name):
 ''' 
 #############################################################################################################
 
-NetCDF Functions
+NetCDF / Gtiff Functions
 
 #############################################################################################################
 '''
 
+def get_lrm_swe(shppath, data_dir ="../data/LRM_SWE_monthly" ):
+    '''
+    Given a path to a shapefile, compute the monthly SWE
+    Input: (str) - path to shapefile
+    Output: (pd.DataFrame) - monthly SWE 
+    '''
+    
+    # Find SWE files
+    files = [os.path.join(data_dir,x) for x in os.listdir(data_dir) if x.endswith(".tif")]
+    files.sort()
+
+    # Read CVWS shapefile
+    with fiona.open(shppath, "r") as shapefile:
+        cvws_geom = [feature["geometry"] for feature in shapefile]
+
+    # Read the files, mask nans, clip to CVWS, extract dates
+    imdict = {}
+
+    for i in tqdm(files[:]):
+        date = datetime.datetime.strptime(i[-12:-4],'%Y%m%d')+ timedelta(days=-1) # Get the date 
+        datestr = date.strftime('%Y%m%d') # Format date
+        src = rio.open(i) # Read file
+        src2 = rio.mask.mask(src, cvws_geom, crop=True) # Clip to shp 
+        arr = src2[0] # read as array
+        arr = arr.reshape(arr.shape[1], arr.shape[2]) # Reshape bc rasterio has a different dim ordering 
+        arr[arr < 0 ] = np.nan # Mask nodata vals 
+        imdict[datestr] = arr
+        
+    # Fill in the dates with no SWE with nans 
+    dt_idx = pd.date_range(list(imdict.keys())[0], list(imdict.keys())[-1], freq = "M")
+
+    all_dates = {}
+
+    for i in dt_idx:
+        date = i.strftime("%Y%m%d") 
+
+        if date in imdict.keys():
+            im = imdict[date]
+        else:
+            im = np.zeros_like(list(imdict.values())[0])
+            im[im==0] = np.nan
+        all_dates[date] = im
+
+    # Stack all dates to 3D array
+    cvws_swe = np.dstack(list(all_dates.values()))
+
+    # Compute monthly sums
+    swesums = []
+    for i in range(cvws_swe.shape[2]):
+        swesums.append(np.nansum(cvws_swe[:,:,i] *500**2 * 1e-9)) # mult by 2500m pixel area, convert m^3 to km^3
+
+    swedf = pd.DataFrame(swesums,dt_idx)
+    swedf.columns = ['swe_lrm']
+    return swedf
+
+def get_snodas_swe(shppath, data_dir ="/Users/aakash/Desktop/SatDat/SNODAS/SNODAS_CA_processed/" ):
+    '''
+    Given a path to a shapefile, compute the monthly SWE
+    Input: (str) - path to shapefile
+    Output: (pd.DataFrame) - monthly SWE 
+    '''
+    
+    # Find SWE files
+    files = [os.path.join(data_dir,x) for x in os.listdir(data_dir) if x.endswith(".tif")]
+    files.sort()
+
+    # Read CVWS shapefile
+    with fiona.open(shppath, "r") as shapefile:
+        cvws_geom = [feature["geometry"] for feature in shapefile]
+
+    # Read the files, mask nans, clip to CVWS, extract dates
+    imdict = {}
+
+    for i in tqdm(files[:]):
+        date = datetime.datetime.strptime(i[-16:-8],'%Y%m%d')# Get the date 
+        if date.day == 1:
+            datestr = date.strftime('%Y%m%d') # Format date
+            src = rio.open(i) # Read file
+            src2 = rio.mask.mask(src, cvws_geom, crop=True) # Clip to shp 
+            arr = src2[0].astype(float) # read as array
+            arr = arr.reshape(arr.shape[1], arr.shape[2]) # Reshape bc rasterio has a different dim ordering 
+            arr[arr < 0 ] = np.nan # Mask nodata vals 
+            imdict[datestr] = arr/1000 # divide by scale factor to get SWE in m 
+        
+    # Stack all dates to 3D array
+    cvws_swe = np.dstack(list(imdict.values()))
+
+    # Compute monthly sums
+    swesums = []
+    for i in range(cvws_swe.shape[2]):
+        swesums.append(np.nansum(cvws_swe[:,:,i] * 1000**2 * 1e-9)) # multiply by 1000m pixel size, convert m^3 to km^3
+
+    dt_idx = [datetime.datetime.strptime(x, '%Y%m%d')+ timedelta(days=-1)  for x in imdict.keys()]
+    swedf = pd.DataFrame(swesums,dt_idx)
+    swedf.columns = ['swe_snodas']
+    return swedf
+
+def get_ssebop(shppath):
+    '''
+    Given a path to a shapefile, compute the monthly SSEBop ET
+    Input: (str) - path to shapefile
+    Output: (pd.DataFrame) - monthly SSEBop ET  
+    '''
+    
+    files = [os.path.join("../data",x) for x in os.listdir("../data") if x.endswith("nc") if "SSEBOP" in x]
+    ds = xr.open_dataset(files[0])
+    
+    gdf = gp.read_file(shppath)
+    
+    ds['catch'] = rasterize(gdf.geometry, ds['et'][0].coords)
+    ssebop_masked = ds['et']*ds['catch']
+    
+    dt = pd.date_range(ds.time[0].values, ds.time[-1].values, freq = "MS")
+
+    et= []
+    for i in ssebop_masked:
+        et.append(i.sum()* 1e-6) # m^2 to km^2 
+        
+    etdf = pd.DataFrame({'et': np.array(et)}, index = dt)
+    etdf.columns = ["aet_ssebop"]
+    etdf.set_index(etdf.index + MonthEnd(0), inplace = True)
+    
+    return etdf
+    
+
 def transform_from_latlon(lat, lon):
-    lat = np.asarray(lat)
-    lon = np.asarray(lon)
-    trans = Affine.translation(lon[0], lat[0])
-    scale = Affine.scale(lon[1] - lon[0], lat[1] - lat[0])
-    return trans * scale
+	lat = np.asarray(lat)
+	lon = np.asarray(lon)
+	trans = Affine.translation(lon[0], lat[0])
+	scale = Affine.scale(lon[1] - lon[0], lat[1] - lat[0])
+	return trans * scale
 
 def rasterize(shapes, coords, fill=np.nan, **kwargs):
-    """Rasterize a list of (geometry, fill_value) tuples onto the given
-    xray coordinates. This only works for 1d latitude and longitude
-    arrays.
-    """
-    transform = transform_from_latlon(coords['lat'], coords['lon'])
-    out_shape = (len(coords['lat']), len(coords['lon']))
-    raster = features.rasterize(shapes, out_shape=out_shape,
-                                fill=fill, transform=transform,
-                                dtype=float, **kwargs)
-    return xr.DataArray(raster, coords=coords, dims=('lat', 'lon'))
+	"""
+	Rasterize a list of (geometry, fill_value) tuples onto the given
+	xray coordinates. This only works for 1d latitude and longitude
+	arrays.
+	"""
+	transform = transform_from_latlon(coords['lat'], coords['lon'])
+	out_shape = (len(coords['lat']), len(coords['lon']))
+	raster = features.rasterize(shapes, out_shape=out_shape,
+								fill=fill, transform=transform,
+								dtype=float, **kwargs)
+	return xr.DataArray(raster, coords=coords, dims=('lat', 'lon'))
 
 
+def write_raster(array,gdf,outfn):
+	'''
+	converts a numpy array and a geopandas gdf to a geotiff
+	Data values are stored in np.array
+	spatial coordinates stored in gdf
+	outfn - outpath
+	'''
+	
+	xmin, ymin = gdf.bounds.minx.values[0], gdf.bounds.miny.values[0]
+	xmax, ymax = gdf.bounds.maxx.values[0], gdf.bounds.maxy.values[0]
+	nrows, ncols = array.shape
+	xres = (xmax-xmin)/float(ncols)
+	yres = (ymax-ymin)/float(nrows)
+	geotransform =(xmin,xres,0,ymax,0, -yres)   
 
+	output_raster = gdal.GetDriverByName('GTiff').Create(outfn,ncols, nrows, 1 , gdal.GDT_Float32)  # Open the file
+	output_raster.SetGeoTransform(geotransform)  # Specify coords
+	srs = osr.SpatialReference()                 # Establish encoding
+	srs.ImportFromEPSG(4326)                     # WGS84 lat long
+	output_raster.SetProjection(srs.ExportToWkt() )   # Export coordinate system 
+	output_raster.GetRasterBand(1).WriteArray(array)   # Write array to raster
+	
+	print("wrote {}".format(outfn))
+	return outfn
 
 ''' 
 #############################################################################################################
@@ -629,9 +844,9 @@ def load_data():
 	#########################
 	##### Gravity data ######
 	#########################
-	data['jpl'] = [ee.ImageCollection('NASA/GRACE/MASS_GRIDS/LAND'), "lwe_thickness_jpl",  ee.Image("NASA/GRACE/MASS_GRIDS/LAND_AUX_2014").select("SCALE_FACTOR")]
-	data['csr'] = [ee.ImageCollection('NASA/GRACE/MASS_GRIDS/LAND'), "lwe_thickness_csr",  ee.Image("NASA/GRACE/MASS_GRIDS/LAND_AUX_2014").select("SCALE_FACTOR")]
-	data['gfz'] = [ee.ImageCollection('NASA/GRACE/MASS_GRIDS/LAND'), "lwe_thickness_gfz",  ee.Image("NASA/GRACE/MASS_GRIDS/LAND_AUX_2014").select("SCALE_FACTOR")]
+	data['jpl'] = [ee.ImageCollection('NASA/GRACE/MASS_GRIDS/LAND'), "lwe_thickness_jpl",  ee.Image("NASA/GRACE/MASS_GRIDS/LAND_AUX_2014").select("SCALE_FACTOR"), 25000]
+	data['csr'] = [ee.ImageCollection('NASA/GRACE/MASS_GRIDS/LAND'), "lwe_thickness_csr",  ee.Image("NASA/GRACE/MASS_GRIDS/LAND_AUX_2014").select("SCALE_FACTOR"), 25000]
+	data['gfz'] = [ee.ImageCollection('NASA/GRACE/MASS_GRIDS/LAND'), "lwe_thickness_gfz",  ee.Image("NASA/GRACE/MASS_GRIDS/LAND_AUX_2014").select("SCALE_FACTOR"), 25000]
 
 	data['mas'] = [ee.ImageCollection('NASA/GRACE/MASS_GRIDS/MASCON'), "lwe_thickness", 1] 
 	data['mas_unc'] = [ee.ImageCollection('NASA/GRACE/MASS_GRIDS/MASCON'), "uncertainty", 1] 
@@ -644,20 +859,13 @@ def load_data():
 	##### Optical data ######
 	#########################
 
-	data['modis_snow1'] = [ee.ImageCollection('MODIS/006/MOD10A1'), "NDSI_Snow_Cover",  1, 2500] # reduced resolution  
-	data['modis_snow2'] = [ee.ImageCollection('MODIS/006/MYD10A1'), "NDSI_Snow_Cover",  1, 2500]  # reduced resolution 
+	data['modis_snow'] = [ee.ImageCollection('MODIS/006/MOD10A1'), "NDSI_Snow_Cover",  1, 2500] # reduced resolution  
 	data['modis_ndvi'] = [ee.ImageCollection('MODIS/MCD43A4_NDVI'), "NDVI",  1, 500] 
 
 	data['landsat_8_b1'] = [ee.ImageCollection('LANDSAT/LC08/C01/T1_SR'), "B1" ,  0.001, 30] 
 
 	data['l8_ndwi_32d'] = [ee.ImageCollection('LANDSAT/LC08/C01/T1_32DAY_NDWI'), "NDWI", 1, 30]
 	data['l8_ndwi_annual'] = [ee.ImageCollection("LANDSAT/LC08/C01/T1_ANNUAL_NDWI"), "NDWI", 1, 30]
-
-	data['l8_ndvi_annual'] = [ee.ImageCollection("LANDSAT/LC08/C01/T1_ANNUAL_NDVI"), "NDVI", 1, 30]
-
-
-	data['l7_ndwi_32d'] = [ee.ImageCollection('LANDSAT/LC07/C01/T1_32DAY_NDWI'), "NDWI", 1, 30]
-
 
 
 	###########################
